@@ -57,6 +57,10 @@ python -m auditpipe.run --data data --out output/findings.json --no-llm
 python -m auditpipe.server
 ```
 
+HTTP uploads and generated evidence are written under `backend/runtime/` by
+default, keeping the tracked sample dossier in `backend/data/` unchanged.
+Override this location with `CORTEX_RUNTIME_DIR` when deploying.
+
 Model defaults to `gpt-5.6` (override with `--model` or `AUDIT_MODEL`).
 The OpenAI key is loaded automatically from `.env` via `python-dotenv`.
 
@@ -90,4 +94,3 @@ overstatement €342,800 — exceeds tolerable misstatement.
 ```
 confirmed=9 leads=0 cleared=3 profit_overstatement=EUR 342,800 (exceeds tolerance)
 ```
-

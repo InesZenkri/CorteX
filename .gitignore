@@ -8,3 +8,7 @@ test-results/
 *.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts
+.venv/
+__pycache__/
+*.py[cod]
+backend/runtime/

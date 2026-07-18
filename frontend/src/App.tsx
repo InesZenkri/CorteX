@@ -24,6 +24,8 @@ export default function App() {
   const [citation, setCitation] = useState<Citation>()
   const [uploadedFolders, setUploadedFolders] = useState<UploadedFolder[]>([])
   const [investigationScope, setInvestigationScope] = useState<UploadedFolder>()
+  const [investigationStarting, setInvestigationStarting] = useState(false)
+  const [integrationError, setIntegrationError] = useState<string>()
   const uploadedFolder = combineFolders(uploadedFolders)
   useEffect(() => { void loadFoldersFromCache().then(setUploadedFolders).catch(() => undefined) }, [])
   const addUploadedFolder = (folder: UploadedFolder) => { setUploadedFolders((current) => { const next = [...current, folder]; void saveFoldersToCache(next).catch(() => undefined); return next }) }
@@ -33,7 +35,18 @@ export default function App() {
     setUploadedFolders((current) => { const next = current.filter((folder) => folder.id !== id); void saveFoldersToCache(next).catch(() => undefined); return next })
     if (investigationScope?.id === id) setInvestigationScope(undefined)
   }
-  const openInvestigation = (scope?: UploadedFolder) => { setInvestigationScope(scope); setFindingId(undefined); setSelectedGraphItem(undefined); setView('investigate') }
+  const openInvestigation = async (scope?: UploadedFolder) => {
+    if (!scope || investigationStarting) return
+    setInvestigationStarting(true); setIntegrationError(undefined)
+    try {
+      await api.uploadScope(scope)
+      await api.investigate()
+      setInvestigationScope(scope); setFindingId(undefined); setSelectedGraphItem(undefined); setView('investigate')
+      await queryClient.invalidateQueries({ queryKey: ['dossiers'] })
+    } catch (reason) {
+      setIntegrationError(reason instanceof Error ? reason.message : 'The backend investigation could not be started.')
+    } finally { setInvestigationStarting(false) }
+  }
   const dossierQuery = useQuery({ queryKey: ['dossiers'], queryFn: api.dossiers })
   const dossierId = dossierQuery.data?.[0]?.id ?? ''
   const summaryQuery = useQuery({ queryKey: ['summary', dossierId], queryFn: () => api.summary(dossierId), enabled: !!dossierId })
@@ -41,11 +54,19 @@ export default function App() {
   const findingsQuery = useQuery({ queryKey: ['findings', dossierId], queryFn: () => api.findings(dossierId), enabled: !!dossierId })
   const documentsQuery = useQuery({ queryKey: ['documents', dossierId], queryFn: () => api.documents(dossierId), enabled: !!dossierId })
   const findingQuery = useQuery({ queryKey: ['finding', findingId], queryFn: () => api.finding(findingId!), enabled: !!findingId })
+  const investigationStatusQuery = useQuery({ queryKey: ['investigation-status'], queryFn: api.investigationSummary, enabled: view === 'investigate', refetchInterval: (query) => query.state.data?.dossier_status === 'processing' ? 1500 : false })
   const reviewMutation = useMutation({ mutationFn: ({ status }: { status: ReviewStatus }) => api.review(findingId!, { status }), onSuccess: (updated) => { queryClient.setQueryData(['finding', findingId], updated); queryClient.invalidateQueries({ queryKey: ['findings', dossierId] }) } })
   const allQueries = [dossierQuery, graphQuery, findingsQuery, documentsQuery]
   const error = allQueries.find((query) => query.isError)?.error
 
   useEffect(() => { if (findingId) setSelectedGraphItem(undefined) }, [findingId])
+  useEffect(() => {
+    if (investigationStatusQuery.data?.dossier_status === 'ready' && investigationStatusQuery.data.progress === 100) {
+      void queryClient.invalidateQueries({ queryKey: ['graph', dossierId] })
+      void queryClient.invalidateQueries({ queryKey: ['findings', dossierId] })
+      void queryClient.invalidateQueries({ queryKey: ['summary', dossierId] })
+    }
+  }, [investigationStatusQuery.data?.dossier_status, investigationStatusQuery.data?.progress, dossierId, queryClient])
   const openCitation = (id: string) => {
     const all = [...(findingQuery.data?.citations ?? []), ...(selectedGraphItem?.citations ?? []), ...(graphQuery.data?.nodes.flatMap((node) => node.citations) ?? [])]
     const found = all.find((item) => item.id === id)
@@ -55,12 +76,21 @@ export default function App() {
   if (dossierQuery.isLoading) return <div className="state-page"><LoaderCircle className="spin"/><p>Opening evidence ledger…</p></div>
 
   return <Shell folderName={uploadedFolder?.rootName} documentCount={uploadedFolder?.files.length} view={view} onViewChange={(next) => { setView(next); setFindingId(undefined); setSelectedGraphItem(undefined) }}>
-    {view === 'overview' && <Overview folder={uploadedFolder} folders={uploadedFolders} onFolderAdd={addUploadedFolder} onFolderDelete={deleteUploadedFolder} onInvestigate={openInvestigation} onOpenDocuments={() => setView('documents')}/>} 
+    {view === 'overview' && <Overview
+      folder={uploadedFolder}
+      folders={uploadedFolders}
+      onFolderAdd={addUploadedFolder}
+      onFolderDelete={deleteUploadedFolder}
+      onInvestigate={(scope) => void openInvestigation(scope)}
+      onOpenDocuments={() => setView('documents')}
+    />}
     {view === 'documents' && <Documents folder={uploadedFolder} onUpload={() => setView('overview')}/>} 
     {view === 'investigate' && <div className="investigation-page">
       {findingId && findingQuery.data ? <FindingDetail finding={findingQuery.data} isUpdating={reviewMutation.isPending} onBack={() => setFindingId(undefined)} onReview={(status) => reviewMutation.mutate({ status })} onCitation={openCitation}/>
-      : <><div className="investigation-main"><div className="investigation-heading"><div><p className="eyebrow">Entity intelligence · {investigationScope?.rootName ?? 'No folder scope selected'}</p><h1>Follow the money.</h1></div><div><span className="live-dot"/> {investigationScope ? `${investigationScope.files.length} source files in scope` : 'Select a scope from Overview'}</div></div>{graphQuery.data ? <InvestigationGraph data={graphQuery.data} selected={selectedGraphItem} onSelect={setSelectedGraphItem}/> : <div className="panel-loader"><LoaderCircle className="spin"/>Building entity graph…</div>}{selectedGraphItem && <DetailDrawer item={selectedGraphItem} onClose={() => setSelectedGraphItem(undefined)} onFinding={setFindingId} onCitation={openCitation}/>}</div>{findingsQuery.data && <FindingList findings={findingsQuery.data} activeId={findingId} onSelect={setFindingId}/>}</>}
+      : <><div className="investigation-main"><div className="investigation-heading"><div><p className="eyebrow">Entity intelligence · {investigationScope?.rootName ?? 'No folder scope selected'}</p><h1>{investigationStatusQuery.data?.dossier_status === 'processing' ? 'Analyzing evidence…' : 'Follow the money.'}</h1></div><div><span className="live-dot"/> {investigationStatusQuery.data?.dossier_status === 'processing' ? `${investigationStatusQuery.data.progress}% · ${investigationStatusQuery.data.file_count} files` : investigationScope ? `${investigationScope.files.length} source files in scope` : 'Select a scope from Overview'}</div></div>{investigationStatusQuery.data?.dossier_status === 'processing' ? <div className="analysis-progress"><LoaderCircle className="spin"/><strong>Deterministic detectors are running</strong><span>Results will appear automatically when verification completes.</span><i><b style={{ width: `${investigationStatusQuery.data.progress}%` }}/></i></div> : graphQuery.data ? <InvestigationGraph data={graphQuery.data} selected={selectedGraphItem} onSelect={setSelectedGraphItem}/> : <div className="panel-loader"><LoaderCircle className="spin"/>Building entity graph…</div>}{selectedGraphItem && <DetailDrawer item={selectedGraphItem} onClose={() => setSelectedGraphItem(undefined)} onFinding={setFindingId} onCitation={openCitation}/>}</div>{findingsQuery.data && <FindingList findings={findingsQuery.data} activeId={findingId} onSelect={setFindingId}/>}</>}
     </div>}
     {citation && <EvidenceViewer citation={citation} document={documentsQuery.data?.find((doc) => doc.id === citation.documentId)} onClose={() => setCitation(undefined)}/>} 
+    {investigationStarting && <div className="integration-toast"><LoaderCircle className="spin"/><span>Uploading selected scope to AuditPipe…</span></div>}
+    {integrationError && <button className="integration-toast error" onClick={() => setIntegrationError(undefined)}><AlertTriangle size={15}/><span>{integrationError}</span></button>}
   </Shell>
 }

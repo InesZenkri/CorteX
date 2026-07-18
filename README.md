@@ -11,12 +11,19 @@ Evidence-first fraud investigation for auditors. CorteX turns a dossier into a c
 ## Run locally
 
 ```bash
-cd frontend
-npm install
-npm run dev
+cd frontend && npm install
+cd ../backend && python3 -m venv .venv && .venv/bin/pip install -e .
 ```
 
-The frontend uses an in-browser API simulator by default. Set `VITE_API_BASE_URL=http://localhost:8000` to connect the same client to FastAPI. Set `VITE_USE_MOCK_API=false` to disable the simulator.
+Run the two services in separate terminals from the repository root:
+
+```bash
+npm run dev:backend
+npm run dev:frontend
+```
+
+Vite proxies `/api` to FastAPI on port 8000. Set `VITE_API_BASE_URL` only when the API is hosted elsewhere. The legacy demo API is available explicitly with `VITE_USE_MOCK_API=true`.
+Investigations default to deterministic mode so the integrated workflow runs without an API key. Set `VITE_USE_LLM=true` and provide `OPENAI_API_KEY` in the project or backend `.env` to enable the LLM pass.
 
 ## Quality checks
 
@@ -27,4 +34,3 @@ npm run build
 ```
 
 All financial values arrive as strings. Every finding, contradiction, graph relationship, and monetary value carries citations. The backend should return `404` when cited documents are unavailable and `422` for invalid review mutations.
-

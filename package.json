@@ -3,6 +3,8 @@
   "private": true,
   "scripts": {
     "dev": "npm --prefix frontend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:backend": "cd backend && .venv/bin/uvicorn auditpipe.server:app --host 127.0.0.1 --port 8000",
     "build": "npm --prefix frontend run build",
     "test": "npm --prefix frontend run test",
     "typecheck": "npm --prefix frontend run typecheck"

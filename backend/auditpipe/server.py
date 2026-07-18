@@ -4,20 +4,23 @@ from __future__ import annotations
 
 import shutil
 import threading
+import os
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from . import api_adapt, config
 from .pipeline import run as run_pipeline
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BACKEND_DIR / "data"
-OUT_PATH = BACKEND_DIR / "output" / "findings.json"
-DB_PATH = BACKEND_DIR / "output" / "evidence.db"
+RUNTIME_DIR = Path(os.getenv("CORTEX_RUNTIME_DIR", BACKEND_DIR / "runtime"))
+DATA_DIR = RUNTIME_DIR / "data"
+OUT_PATH = RUNTIME_DIR / "output" / "findings.json"
+DB_PATH = RUNTIME_DIR / "output" / "evidence.db"
 
 app = FastAPI(title="CorteX Evidence API", version="0.1.0")
 app.add_middleware(
@@ -246,9 +249,20 @@ def get_document(document_id: str) -> dict[str, Any]:
     raise HTTPException(404, "Document not found")
 
 
+@app.get("/api/documents/{document_id}/file")
+def get_document_file(document_id: str) -> FileResponse:
+    for path in DATA_DIR.rglob("*"):
+        if not path.is_file() or path.name == ".DS_Store":
+            continue
+        rel = path.relative_to(DATA_DIR).as_posix()
+        if api_adapt._doc_id(rel) == document_id:
+            return FileResponse(path, filename=path.name)
+    raise HTTPException(404, "Document not found")
+
+
 def main() -> None:
     import uvicorn
-    uvicorn.run("auditpipe.server:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("auditpipe.server:app", host="127.0.0.1", port=8000)
 
 
 if __name__ == "__main__":
