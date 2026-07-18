@@ -1,0 +1,182 @@
+openapi: 3.1.0
+info:
+  title: CorteX Evidence API
+  version: 0.1.0
+servers:
+  - url: http://localhost:8000
+paths:
+  /api/dossiers:
+    get:
+      operationId: listDossiers
+      responses:
+        '200': { description: Available dossiers, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Dossier' } } } } }
+  /api/dossiers/{dossierId}/summary:
+    get:
+      operationId: getDossierSummary
+      parameters: [{ $ref: '#/components/parameters/DossierId' }]
+      responses:
+        '200': { description: Dossier metrics, content: { application/json: { schema: { $ref: '#/components/schemas/DossierSummary' } } } }
+  /api/dossiers/{dossierId}/documents:
+    get:
+      operationId: listDocuments
+      parameters: [{ $ref: '#/components/parameters/DossierId' }]
+      responses:
+        '200': { description: Evidence documents, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Document' } } } } }
+  /api/dossiers/{dossierId}/graph:
+    get:
+      operationId: getEntityGraph
+      parameters: [{ $ref: '#/components/parameters/DossierId' }]
+      responses:
+        '200': { description: Cited entity graph, content: { application/json: { schema: { $ref: '#/components/schemas/GraphData' } } } }
+  /api/dossiers/{dossierId}/findings:
+    get:
+      operationId: listFindings
+      parameters: [{ $ref: '#/components/parameters/DossierId' }]
+      responses:
+        '200': { description: Ranked findings, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Finding' } } } } }
+  /api/findings/{findingId}:
+    get:
+      operationId: getFinding
+      parameters: [{ $ref: '#/components/parameters/FindingId' }]
+      responses:
+        '200': { description: Finding reasoning and proof, content: { application/json: { schema: { $ref: '#/components/schemas/FindingDetail' } } } }
+    patch:
+      operationId: reviewFinding
+      parameters: [{ $ref: '#/components/parameters/FindingId' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ReviewInput' } } } }
+      responses:
+        '200': { description: Updated finding, content: { application/json: { schema: { $ref: '#/components/schemas/FindingDetail' } } } }
+  /api/documents/{documentId}:
+    get:
+      operationId: getDocument
+      parameters: [{ $ref: '#/components/parameters/DocumentId' }]
+      responses:
+        '200': { description: Document metadata, content: { application/json: { schema: { $ref: '#/components/schemas/Document' } } } }
+  /api/documents/{documentId}/file:
+    get:
+      operationId: getDocumentFile
+      parameters: [{ $ref: '#/components/parameters/DocumentId' }]
+      responses:
+        '200': { description: Original PDF, content: { application/pdf: { schema: { type: string, contentEncoding: binary } } } }
+components:
+  parameters:
+    DossierId: { name: dossierId, in: path, required: true, schema: { type: string } }
+    FindingId: { name: findingId, in: path, required: true, schema: { type: string } }
+    DocumentId: { name: documentId, in: path, required: true, schema: { type: string } }
+  schemas:
+    BoundingBox:
+      type: object
+      required: [x, y, width, height]
+      properties: { x: { type: number }, y: { type: number }, width: { type: number }, height: { type: number } }
+    Citation:
+      type: object
+      required: [id, documentId, documentName, page, quote]
+      properties:
+        id: { type: string }
+        documentId: { type: string }
+        documentName: { type: string }
+        page: { type: integer, minimum: 1 }
+        quote: { type: string, minLength: 1 }
+        boundingBox: { $ref: '#/components/schemas/BoundingBox' }
+    Money:
+      type: object
+      required: [amount, currency, originalText, citation]
+      properties:
+        amount: { type: string, pattern: '^-?[0-9]+\.[0-9]{2}$' }
+        currency: { type: string, minLength: 3, maxLength: 3 }
+        originalText: { type: string }
+        citation: { $ref: '#/components/schemas/Citation' }
+    Dossier:
+      type: object
+      required: [id, name, company, period, status, progress]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        company: { type: string }
+        period: { type: string }
+        status: { enum: [ready, processing, failed] }
+        progress: { type: integer, minimum: 0, maximum: 100 }
+    DossierSummary:
+      type: object
+      required: [health, documents, verifiedFindings, reviewQueue, unresolvedEntities, lastUpdated]
+      properties:
+        health: { type: integer }
+        documents: { type: integer }
+        verifiedFindings: { type: integer }
+        reviewQueue: { type: integer }
+        unresolvedEntities: { type: integer }
+        lastUpdated: { type: string }
+    Document:
+      type: object
+      required: [id, name, type, language, pages, status, extractedFacts]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        type: { type: string }
+        language: { enum: [DE, EN] }
+        pages: { type: integer }
+        status: { enum: [verified, processing, unavailable] }
+        extractedFacts: { type: integer }
+        previewLines: { type: array, items: { type: string } }
+    GraphNode:
+      type: object
+      required: [id, label, kind, subtitle, risk, sourceCount, findingIds, citations]
+      properties:
+        id: { type: string }
+        label: { type: string }
+        kind: { enum: [company, person, account, document] }
+        subtitle: { type: string }
+        risk: { enum: [alert, watch, clear] }
+        sourceCount: { type: integer }
+        findingIds: { type: array, items: { type: string } }
+        citations: { type: array, minItems: 1, items: { $ref: '#/components/schemas/Citation' } }
+    GraphEdge:
+      type: object
+      required: [id, source, target, label, risk, explanation, findingIds, citations]
+      properties:
+        id: { type: string }
+        source: { type: string }
+        target: { type: string }
+        label: { type: string }
+        risk: { enum: [alert, watch, clear] }
+        explanation: { type: string }
+        findingIds: { type: array, items: { type: string } }
+        citations: { type: array, minItems: 1, items: { $ref: '#/components/schemas/Citation' } }
+    GraphData:
+      type: object
+      required: [nodes, edges]
+      properties:
+        nodes: { type: array, items: { $ref: '#/components/schemas/GraphNode' } }
+        edges: { type: array, items: { $ref: '#/components/schemas/GraphEdge' } }
+    Finding:
+      type: object
+      required: [id, rank, title, summary, kind, severity, confidence, reviewStatus, sourceCount, citations]
+      properties:
+        id: { type: string }
+        rank: { type: integer }
+        title: { type: string }
+        summary: { type: string }
+        kind: { enum: [finding, observation, clean] }
+        severity: { enum: [critical, high, medium, low] }
+        confidence: { type: integer, minimum: 0, maximum: 100 }
+        reviewStatus: { enum: [confirmed, rejected, needs_review] }
+        amount: { $ref: '#/components/schemas/Money' }
+        sourceCount: { type: integer }
+        citations: { type: array, minItems: 1, items: { $ref: '#/components/schemas/Citation' } }
+    FindingDetail:
+      allOf:
+        - { $ref: '#/components/schemas/Finding' }
+        - type: object
+          required: [claim, checks, contradictions, defenses]
+          properties:
+            claim: { type: string }
+            checks: { type: array, items: { type: object, required: [label, result, detail], properties: { label: { type: string }, result: { enum: [passed, failed] }, detail: { type: string } } } }
+            contradictions: { type: array, items: { type: object, required: [id, label, statement, citation], properties: { id: { type: string }, label: { type: string }, statement: { type: string }, citation: { $ref: '#/components/schemas/Citation' } } } }
+            defenses: { type: array, items: { type: object, required: [explanation, verdict, detail], properties: { explanation: { type: string }, verdict: { enum: [refuted, plausible] }, detail: { type: string } } } }
+            auditorNote: { type: string }
+    ReviewInput:
+      type: object
+      required: [status]
+      properties:
+        status: { enum: [confirmed, rejected, needs_review] }
+        note: { type: string, maxLength: 4000 }

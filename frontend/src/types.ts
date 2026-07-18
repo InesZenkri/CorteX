@@ -48,6 +48,7 @@ export interface DocumentRecord {
 }
 
 export interface GraphNode {
+  [key: string]: unknown
   id: string
   label: string
   kind: 'company' | 'person' | 'account' | 'document'
@@ -59,6 +60,7 @@ export interface GraphNode {
 }
 
 export interface GraphEdge {
+  [key: string]: unknown
   id: string
   source: string
   target: string
@@ -100,4 +102,3 @@ export interface FindingDetail extends Finding {
 
 export interface GraphData { nodes: GraphNode[]; edges: GraphEdge[] }
 export interface ReviewInput { status: ReviewStatus; note?: string }
-
