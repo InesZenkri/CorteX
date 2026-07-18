@@ -11,8 +11,8 @@ import { DetailDrawer } from './components/DetailDrawer'
 import { FindingDetail } from './components/FindingDetail'
 import { EvidenceViewer } from './components/EvidenceViewer'
 import { Documents } from './components/Documents'
-import type { UploadedFolder } from './lib/folderUpload'
-import { loadFolderFromCache, saveFolderToCache } from './lib/folderCache'
+import { combineFolders, type UploadedFolder } from './lib/folderUpload'
+import { loadFoldersFromCache, saveFoldersToCache } from './lib/folderCache'
 
 type View = 'overview' | 'investigate' | 'documents'
 
@@ -22,9 +22,18 @@ export default function App() {
   const [selectedGraphItem, setSelectedGraphItem] = useState<GraphNode | GraphEdge>()
   const [findingId, setFindingId] = useState<string>()
   const [citation, setCitation] = useState<Citation>()
-  const [uploadedFolder, setUploadedFolder] = useState<UploadedFolder>()
-  useEffect(() => { void loadFolderFromCache().then((folder) => folder && setUploadedFolder(folder)).catch(() => undefined) }, [])
-  const updateUploadedFolder = (folder: UploadedFolder) => { setUploadedFolder(folder); void saveFolderToCache(folder).catch(() => undefined) }
+  const [uploadedFolders, setUploadedFolders] = useState<UploadedFolder[]>([])
+  const [investigationScope, setInvestigationScope] = useState<UploadedFolder>()
+  const uploadedFolder = combineFolders(uploadedFolders)
+  useEffect(() => { void loadFoldersFromCache().then(setUploadedFolders).catch(() => undefined) }, [])
+  const addUploadedFolder = (folder: UploadedFolder) => { setUploadedFolders((current) => { const next = [...current, folder]; void saveFoldersToCache(next).catch(() => undefined); return next }) }
+  const deleteUploadedFolder = (id: string) => {
+    const target = uploadedFolders.find((folder) => folder.id === id)
+    if (!target || !window.confirm(`Delete “${target.rootName}” from this engagement? The original files on your computer will not be affected.`)) return
+    setUploadedFolders((current) => { const next = current.filter((folder) => folder.id !== id); void saveFoldersToCache(next).catch(() => undefined); return next })
+    if (investigationScope?.id === id) setInvestigationScope(undefined)
+  }
+  const openInvestigation = (scope?: UploadedFolder) => { setInvestigationScope(scope); setFindingId(undefined); setSelectedGraphItem(undefined); setView('investigate') }
   const dossierQuery = useQuery({ queryKey: ['dossiers'], queryFn: api.dossiers })
   const dossierId = dossierQuery.data?.[0]?.id ?? ''
   const summaryQuery = useQuery({ queryKey: ['summary', dossierId], queryFn: () => api.summary(dossierId), enabled: !!dossierId })
@@ -46,11 +55,11 @@ export default function App() {
   if (dossierQuery.isLoading) return <div className="state-page"><LoaderCircle className="spin"/><p>Opening evidence ledger…</p></div>
 
   return <Shell folderName={uploadedFolder?.rootName} documentCount={uploadedFolder?.files.length} view={view} onViewChange={(next) => { setView(next); setFindingId(undefined); setSelectedGraphItem(undefined) }}>
-    {view === 'overview' && <Overview folder={uploadedFolder} onFolderChange={updateUploadedFolder} onOpenDocuments={() => setView('documents')}/>} 
+    {view === 'overview' && <Overview folder={uploadedFolder} folders={uploadedFolders} onFolderAdd={addUploadedFolder} onFolderDelete={deleteUploadedFolder} onInvestigate={openInvestigation} onOpenDocuments={() => setView('documents')}/>} 
     {view === 'documents' && <Documents folder={uploadedFolder} onUpload={() => setView('overview')}/>} 
     {view === 'investigate' && <div className="investigation-page">
       {findingId && findingQuery.data ? <FindingDetail finding={findingQuery.data} isUpdating={reviewMutation.isPending} onBack={() => setFindingId(undefined)} onReview={(status) => reviewMutation.mutate({ status })} onCitation={openCitation}/>
-      : <><div className="investigation-main"><div className="investigation-heading"><div><p className="eyebrow">Entity intelligence</p><h1>Follow the money.</h1></div><div><span className="live-dot"/> 28 entities · 41 relationships</div></div>{graphQuery.data ? <InvestigationGraph data={graphQuery.data} selected={selectedGraphItem} onSelect={setSelectedGraphItem}/> : <div className="panel-loader"><LoaderCircle className="spin"/>Building entity graph…</div>}{selectedGraphItem && <DetailDrawer item={selectedGraphItem} onClose={() => setSelectedGraphItem(undefined)} onFinding={setFindingId} onCitation={openCitation}/>}</div>{findingsQuery.data && <FindingList findings={findingsQuery.data} activeId={findingId} onSelect={setFindingId}/>}</>}
+      : <><div className="investigation-main"><div className="investigation-heading"><div><p className="eyebrow">Entity intelligence · {investigationScope?.rootName ?? 'No folder scope selected'}</p><h1>Follow the money.</h1></div><div><span className="live-dot"/> {investigationScope ? `${investigationScope.files.length} source files in scope` : 'Select a scope from Overview'}</div></div>{graphQuery.data ? <InvestigationGraph data={graphQuery.data} selected={selectedGraphItem} onSelect={setSelectedGraphItem}/> : <div className="panel-loader"><LoaderCircle className="spin"/>Building entity graph…</div>}{selectedGraphItem && <DetailDrawer item={selectedGraphItem} onClose={() => setSelectedGraphItem(undefined)} onFinding={setFindingId} onCitation={openCitation}/>}</div>{findingsQuery.data && <FindingList findings={findingsQuery.data} activeId={findingId} onSelect={setFindingId}/>}</>}
     </div>}
     {citation && <EvidenceViewer citation={citation} document={documentsQuery.data?.find((doc) => doc.id === citation.documentId)} onClose={() => setCitation(undefined)}/>} 
   </Shell>

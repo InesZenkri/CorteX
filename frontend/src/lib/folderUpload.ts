@@ -11,6 +11,7 @@ export interface UploadedFile {
 }
 
 export interface UploadedFolder {
+  id: string
   rootName: string
   files: UploadedFile[]
   tree: FileTreeItem[]
@@ -72,7 +73,7 @@ export function buildFolder(files: UploadedFile[], emptyFolders: string[] = []):
   }, 0)
   calculateSizes(tree)
   const firstPath = files[0]?.relativePath ?? emptyFolders[0] ?? 'Uploaded folder'
-  return { rootName: firstPath.split('/')[0], files, tree, totalBytes: files.reduce((sum, item) => sum + item.size, 0) }
+  return { id: globalThis.crypto?.randomUUID?.() ?? `folder-${Date.now()}-${Math.random().toString(36).slice(2)}`, rootName: firstPath.split('/')[0], files, tree, totalBytes: files.reduce((sum, item) => sum + item.size, 0) }
 }
 
 export function folderFromFileList(list: FileList): UploadedFolder {
@@ -122,4 +123,20 @@ export function formatFileSize(bytes: number) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
   return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`
+}
+
+function prefixTree(items: FileTreeItem[], prefix: string): FileTreeItem[] {
+  return items.map((item) => ({ ...item, id: `${prefix}-${item.id}`, children: item.children ? prefixTree(item.children, prefix) : undefined }))
+}
+
+export function combineFolders(folders: UploadedFolder[]): UploadedFolder | undefined {
+  if (!folders.length) return undefined
+  const files = folders.flatMap((folder, index) => folder.files.map((file) => ({ ...file, id: `folder-${index}-${file.id}` })))
+  return {
+    id: folders.length === 1 ? folders[0].id : 'combined-folder-scope',
+    rootName: folders.length === 1 ? folders[0].rootName : `${folders.length} uploaded folders`,
+    files,
+    tree: folders.flatMap((folder, index) => prefixTree(folder.tree, `folder-${index}`)),
+    totalBytes: folders.reduce((total, folder) => total + folder.totalBytes, 0),
+  }
 }

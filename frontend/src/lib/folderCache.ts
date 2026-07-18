@@ -15,26 +15,27 @@ function openDatabase() {
   })
 }
 
-export async function saveFolderToCache(folder: UploadedFolder) {
+export async function saveFoldersToCache(folders: UploadedFolder[]) {
   const database = await openDatabase()
   await new Promise<void>((resolve, reject) => {
     const transaction = database.transaction(STORE, 'readwrite')
-    transaction.objectStore(STORE).put(folder, ACTIVE_KEY)
+    transaction.objectStore(STORE).put(folders, ACTIVE_KEY)
     transaction.oncomplete = () => resolve()
     transaction.onerror = () => reject(transaction.error)
   })
   database.close()
 }
 
-export async function loadFolderFromCache() {
+export async function loadFoldersFromCache() {
   const database = await openDatabase()
-  const folder = await new Promise<UploadedFolder | undefined>((resolve, reject) => {
+  const cached = await new Promise<UploadedFolder[] | UploadedFolder | undefined>((resolve, reject) => {
     const transaction = database.transaction(STORE, 'readonly')
     const request = transaction.objectStore(STORE).get(ACTIVE_KEY)
-    request.onsuccess = () => resolve(request.result as UploadedFolder | undefined)
+    request.onsuccess = () => resolve(request.result as UploadedFolder[] | UploadedFolder | undefined)
     request.onerror = () => reject(request.error)
   })
   database.close()
-  return folder
+  if (!cached) return []
+  const folders = Array.isArray(cached) ? cached : [cached]
+  return folders.map((folder) => ({ ...folder, id: folder.id || globalThis.crypto?.randomUUID?.() || `folder-${Date.now()}-${Math.random().toString(36).slice(2)}` }))
 }
-
