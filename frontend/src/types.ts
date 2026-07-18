@@ -45,6 +45,10 @@ export interface DocumentRecord {
   status: 'verified' | 'processing' | 'unavailable'
   extractedFacts: number
   previewLines: string[]
+  relativePath: string
+  size: number
+  modifiedAt: number
+  mimeType: string
 }
 
 export interface GraphNode {

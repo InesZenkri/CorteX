@@ -145,13 +145,3 @@ button.uploaded-table-row{width:100%;border:0;border-bottom:1px solid var(--line
 
 /* Independent document workspace scrolling */
 .documents-page{min-height:0}.documents-page .page-heading{margin-bottom:22px}.document-workspace{min-height:0;overflow:hidden}.folder-browser{min-height:0;overflow:auto;scrollbar-width:thin;scrollbar-color:#c9c3dd transparent}.folder-browser-head{position:sticky;top:-15px;z-index:4;background:#faf9fd;padding-top:15px}.document-content{min-height:0;overflow:hidden}.document-content .document-toolbar,.folder-path{flex:none}.document-content .document-table{min-height:0;flex:1;overflow:auto;scrollbar-width:thin;scrollbar-color:#c9c3dd transparent;border-radius:0}.document-table .table-head{position:sticky;top:0;z-index:5;background:#f8f7fb;box-shadow:0 1px 0 var(--line)}.uploaded-table-row{min-height:64px;grid-template-columns:minmax(280px,1.6fr) minmax(105px,.72fr) minmax(150px,1fr) minmax(70px,.48fr) minmax(100px,.65fr)}.uploaded-table-head{grid-template-columns:minmax(280px,1.6fr) minmax(105px,.72fr) minmax(150px,1fr) minmax(70px,.48fr) minmax(100px,.65fr)}.uploaded-table-row>span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.uploaded-table-row>div>div strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tree-item.selectable{cursor:pointer}.tree-item.selectable:hover{background:#ece8fb}.tree-item.selectable:focus-visible{outline:1px solid var(--accent);outline-offset:-1px;background:#f1edff}
-
-/* Investigation case status colors */
-.finding-card.case-confirmed{background:#fde8e7;border-bottom-color:#efc2be}
-.finding-card.case-confirmed:hover,.finding-card.case-confirmed.active{background:#f9d6d3}
-.finding-card.case-confirmed.active{box-shadow:inset 3px 0 #b42318}
-.finding-card.case-confirmed .finding-meta>span:first-child,.finding-card.case-confirmed .amount{color:#9f241c}
-.finding-card.case-decoy{background:#fff8d9;border-bottom-color:#eadb9b}
-.finding-card.case-decoy:hover,.finding-card.case-decoy.active{background:#fff2bd}
-.finding-card.case-decoy.active{box-shadow:inset 3px 0 #b78a16}
-.finding-card.case-decoy .finding-meta>span:first-child{color:#806515}

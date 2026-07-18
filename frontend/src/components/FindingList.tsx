@@ -7,7 +7,7 @@ const statusIcon = { confirmed: CheckCircle2, rejected: XCircle, needs_review: E
 export function FindingList({ findings, activeId, onSelect }: { findings: Finding[]; activeId?: string; onSelect: (id: string) => void }) {
   return <aside className="findings-panel"><div className="findings-heading"><div><p className="eyebrow">Ranked by evidence strength</p><h2>Findings</h2></div><span>{findings.length}</span></div>
     <div className="finding-tabs"><button className="active">All</button><button>Findings</button><button>Observations</button></div>
-    <div className="finding-list">{findings.map((finding) => { const StatusIcon = statusIcon[finding.reviewStatus]; const caseColor = finding.reviewStatus === 'confirmed' ? 'case-confirmed' : 'case-decoy'; return <button key={finding.id} className={`finding-card ${finding.kind} ${caseColor} ${activeId === finding.id ? 'active' : ''}`} onClick={() => onSelect(finding.id)}>
+    <div className="finding-list">{findings.map((finding) => { const StatusIcon = statusIcon[finding.reviewStatus]; return <button key={finding.id} className={`finding-card ${finding.kind} ${activeId === finding.id ? 'active' : ''}`} onClick={() => onSelect(finding.id)}>
       <div className="finding-card-top"><span className={`rank rank-${finding.severity}`}>0{finding.rank}</span><span className={`kind kind-${finding.kind}`}>{kindLabel[finding.kind]}</span><span className="confidence">{finding.confidence}%</span></div>
       <strong>{finding.title}</strong><p>{finding.summary}</p>
       {finding.amount && <div className="amount"><CircleAlert size={14}/>{formatMoney(finding.amount.amount, finding.amount.currency)}</div>}
@@ -15,3 +15,4 @@ export function FindingList({ findings, activeId, onSelect }: { findings: Findin
     </button>})}</div>
   </aside>
 }
+
