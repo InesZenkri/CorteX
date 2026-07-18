@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auditpipe"
+version = "0.1.0"
+description = "Forensic-audit pipeline (GPT-5.6)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "openai>=1.40",
+  "openpyxl>=3.1",
+  "pypdf>=4.0",
+  "python-docx>=1.1",
+  "python-dotenv>=1.0",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "python-multipart>=0.0.9",
+]
+
+[project.scripts]
+auditpipe = "auditpipe.run:main"
+auditpipe-server = "auditpipe.server:main"
+
+[tool.setuptools.packages.find]
+include = ["auditpipe*"]

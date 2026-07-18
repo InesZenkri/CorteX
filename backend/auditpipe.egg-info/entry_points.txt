@@ -1,0 +1,2 @@
+[console_scripts]
+auditpipe = auditpipe.run:main
