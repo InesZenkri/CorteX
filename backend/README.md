@@ -1,4 +1,93 @@
-# CorteX backend
+# AuditPipe — forensic-audit pipeline (GPT-5.6)
 
-Reserved for the FastAPI evidence ledger and detector service. Implement `../openapi.yaml` and allow the Vite origin during local development.
+Reads a dossier of accounting exports and documents, finds financial-statement
+fraud, and writes a fully source-cited JSON report. Built so it generalizes to
+an **unseen** dossier: detectors key on *structural* signals, never on
+dossier-specific ids or decoy-specific text.
+
+## Design
+
+GPT-5.6 does what LLMs are good at — classify documents, extract records from
+unstructured PDFs/DOCX (each with a verbatim source quote), resolve entity
+aliases, and write the defense narrative. **Deterministic code owns every
+number and every promote/clear decision.** Invariant: no number reaches the
+output without a quote that code re-verified against the source (`verify_quotes`).
+
+```
+data/ ─▶ ingest ─▶ Evidence Ledger (SQLite + cell provenance)
+                        │
+                        ├─▶ detectors (structural)         ── candidates + inculpatory evidence
+                        ├─▶ exculpatory gate (defense)     ── goods receipt / four-eyes / investment / disclosure
+                        └─▶ promotion (deterministic)      ── confirmed | lead | cleared, with confidence
+                                    │
+                                    ▼
+                          output/findings.json
+```
+
+
+
+## Detectors (all generalized, no hard-coded ids)
+
+- **fictitious_vendor** — new vendor + creator==approver + one user books&pays +
+no goods receipt + fast invoice→payment (+round-amount bonus). Net amount.
+- **capex_repair** — asset addition whose *description* is maintenance/repair
+(lexicon + LLM classification); cleared by genuine-investment wording.
+- **cutoff** — prior-period service date, next-period invoice, no accrual.
+- **structuring** — same payee + same day, ≥N payments each in [0.8·L, L), sum>L.
+Keys on amounts+dates only, so renaming beleg text can't hide it.
+- **related_party** — counterparty in the shareholder list; disclosed ⇒
+downgraded but still tested for off-market (round + ≥ tolerance + year-end).
+
+
+
+## Run
+
+## Run
+
+```bash
+pip install -e .
+# Put OPENAI_API_KEY=sk-... in the project-root .env (or backend/.env)
+
+# CLI
+python -m auditpipe.run --data data --out output/findings.json
+# deterministic only (no network / no LLM — structured files need no LLM):
+python -m auditpipe.run --data data --out output/findings.json --no-llm
+
+# HTTP API for the frontend (upload + investigate + findings)
+python -m auditpipe.server
+```
+
+Model defaults to `gpt-5.6` (override with `--model` or `AUDIT_MODEL`).
+The OpenAI key is loaded automatically from `.env` via `python-dotenv`.
+
+## Output (findings.json)
+
+```jsonc
+{
+  "model": "gpt-5.6",
+  "materiality": { "overall": 400000, "tolerance": 300000, ... },
+  "summary": { "confirmed": 9, "leads": 0, "cleared": 3,
+               "profit_overstatement_eur": 342800,
+               "profit_overstatement_vs_tolerance": "exceeds" },
+  "findings": [ { "id","scheme","criterion","title","amount_eur","status",
+                  "severity","confidence",
+                  "inculpatory":[{"text","source":{"file","locus","quote"}}],
+                  "exculpatory":[...], "narrative":"" } ],
+  "cleared_decoys": [ ... ]   // considered and dismissed, with the refuting source
+}
+```
+
+
+
+## Result on the sample dossier (deterministic mode)
+
+9 confirmed across all four schemes (fictitious vendor €248k, capitalized
+repairs 6×=€150.8k, cut-off €192k, structuring €39k); 3 decoys cleared with
+their refuting source (€480k real investment, disclosed €220k parent charge,
+legitimate new vendor with goods receipts); 0 false positives. Profit
+overstatement €342,800 — exceeds tolerable misstatement.
+
+```
+confirmed=9 leads=0 cleared=3 profit_overstatement=EUR 342,800 (exceeds tolerance)
+```
 
