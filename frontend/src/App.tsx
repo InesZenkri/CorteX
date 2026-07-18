@@ -11,15 +11,20 @@ import { DetailDrawer } from './components/DetailDrawer'
 import { FindingDetail } from './components/FindingDetail'
 import { EvidenceViewer } from './components/EvidenceViewer'
 import { Documents } from './components/Documents'
+import type { UploadedFolder } from './lib/folderUpload'
+import { loadFolderFromCache, saveFolderToCache } from './lib/folderCache'
 
 type View = 'overview' | 'investigate' | 'documents'
 
 export default function App() {
   const queryClient = useQueryClient()
-  const [view, setView] = useState<View>('investigate')
+  const [view, setView] = useState<View>('overview')
   const [selectedGraphItem, setSelectedGraphItem] = useState<GraphNode | GraphEdge>()
   const [findingId, setFindingId] = useState<string>()
   const [citation, setCitation] = useState<Citation>()
+  const [uploadedFolder, setUploadedFolder] = useState<UploadedFolder>()
+  useEffect(() => { void loadFolderFromCache().then((folder) => folder && setUploadedFolder(folder)).catch(() => undefined) }, [])
+  const updateUploadedFolder = (folder: UploadedFolder) => { setUploadedFolder(folder); void saveFolderToCache(folder).catch(() => undefined) }
   const dossierQuery = useQuery({ queryKey: ['dossiers'], queryFn: api.dossiers })
   const dossierId = dossierQuery.data?.[0]?.id ?? ''
   const summaryQuery = useQuery({ queryKey: ['summary', dossierId], queryFn: () => api.summary(dossierId), enabled: !!dossierId })
@@ -40,9 +45,9 @@ export default function App() {
   if (error) return <div className="state-page"><AlertTriangle/><h1>Workspace unavailable</h1><p>{error.message}</p><button onClick={() => window.location.reload()}>Try again</button></div>
   if (dossierQuery.isLoading) return <div className="state-page"><LoaderCircle className="spin"/><p>Opening evidence ledger…</p></div>
 
-  return <Shell dossier={dossierQuery.data?.[0]} view={view} onViewChange={(next) => { setView(next); setFindingId(undefined); setSelectedGraphItem(undefined) }}>
-    {view === 'overview' && summaryQuery.data && findingsQuery.data && <Overview summary={summaryQuery.data} findings={findingsQuery.data} onInvestigate={() => setView('investigate')}/>} 
-    {view === 'documents' && documentsQuery.data && <Documents documents={documentsQuery.data}/>} 
+  return <Shell folderName={uploadedFolder?.rootName} documentCount={uploadedFolder?.files.length} view={view} onViewChange={(next) => { setView(next); setFindingId(undefined); setSelectedGraphItem(undefined) }}>
+    {view === 'overview' && <Overview folder={uploadedFolder} onFolderChange={updateUploadedFolder} onOpenDocuments={() => setView('documents')}/>} 
+    {view === 'documents' && <Documents folder={uploadedFolder} onUpload={() => setView('overview')}/>} 
     {view === 'investigate' && <div className="investigation-page">
       {findingId && findingQuery.data ? <FindingDetail finding={findingQuery.data} isUpdating={reviewMutation.isPending} onBack={() => setFindingId(undefined)} onReview={(status) => reviewMutation.mutate({ status })} onCitation={openCitation}/>
       : <><div className="investigation-main"><div className="investigation-heading"><div><p className="eyebrow">Entity intelligence</p><h1>Follow the money.</h1></div><div><span className="live-dot"/> 28 entities · 41 relationships</div></div>{graphQuery.data ? <InvestigationGraph data={graphQuery.data} selected={selectedGraphItem} onSelect={setSelectedGraphItem}/> : <div className="panel-loader"><LoaderCircle className="spin"/>Building entity graph…</div>}{selectedGraphItem && <DetailDrawer item={selectedGraphItem} onClose={() => setSelectedGraphItem(undefined)} onFinding={setFindingId} onCitation={openCitation}/>}</div>{findingsQuery.data && <FindingList findings={findingsQuery.data} activeId={findingId} onSelect={setFindingId}/>}</>}
@@ -50,4 +55,3 @@ export default function App() {
     {citation && <EvidenceViewer citation={citation} document={documentsQuery.data?.find((doc) => doc.id === citation.documentId)} onClose={() => setCitation(undefined)}/>} 
   </Shell>
 }
-
