@@ -1,7 +1,5 @@
 <div align="center">
-  <img src="frontend/public/cortex.png" alt="CorteX logo" width="220" />
-
-  <h1>CorteX</h1>
+  <img src="frontend/public/cortex.png" alt="CorteX logo" width="380" />
 
   <p><strong>Follow the money. Find the fraud. Prove it.</strong></p>
   <p>An evidence-first AI workspace that turns messy audit dossiers into traceable findings, cited relationships, and source-level proof.</p>
@@ -50,17 +48,123 @@ Auditor confirms, rejects, or requests review
 ## The pipeline
 
 ```mermaid
-flowchart LR
-    A[Upload dossier] --> B[Generic ingestion]
-    B --> C[GPT-5.6 evidence batches]
-    C --> D[Dossier synthesis]
-    D --> E[Deterministic quote verification]
-    E --> F[Entity graph]
-    F --> G[Ranked findings]
-    G --> H[Auditor review]
+flowchart TB
+    subgraph INPUT[1 · Evidence intake]
+        direction LR
+        PDF[PDF documents]
+        TAB[CSV · XLSX · GDPdU]
+        DOC[DOCX · TXT · XML]
+        TREE[Nested folder hierarchy]
+        PDF --> TREE
+        TAB --> TREE
+        DOC --> TREE
+    end
 
-    C -. source passages .-> E
-    E -. rejects invalid citations .-> D
+    subgraph INGEST[2 · Generic ingestion and provenance]
+        direction LR
+        DISCOVER[Discover files and preserve paths]
+        PARSE[Extract readable document content]
+        MANIFEST[Build evidence manifest]
+        BATCH[Create bounded evidence batches]
+        DISCOVER --> PARSE --> MANIFEST --> BATCH
+    end
+
+    TREE --> DISCOVER
+
+    subgraph EVIDENCE[3 · Parallel GPT-5.6 evidence analysis]
+        direction LR
+        EA1[Evidence agent 1]
+        EA2[Evidence agent 2]
+        EAN[Evidence agent N]
+        OBS[Cited observations<br/>facts · entities · controls · anomalies]
+        EA1 --> OBS
+        EA2 --> OBS
+        EAN --> OBS
+    end
+
+    BATCH --> EA1
+    BATCH --> EA2
+    BATCH --> EAN
+
+    subgraph SYNTHESIS[4 · Cross-document synthesis]
+        direction LR
+        LINK[Link observations across files]
+        RECON[Reconcile balances and relationships]
+        CAND[Generate candidate findings]
+        LINK --> RECON --> CAND
+    end
+
+    MANIFEST --> LINK
+    OBS --> LINK
+
+    subgraph TRIAGE[5 · Adversarial triage · three LLM roles]
+        direction LR
+        P[Prosecutor<br/>Minimal contradiction set<br/>Materiality estimate]
+        X[Defense<br/>Cut-off · VAT · FX · credits<br/>Translation · clerical error]
+        J[Judge<br/>Require cited refutation<br/>Neutral audit conclusion]
+        P --> X --> J
+    end
+
+    CAND --> P
+    J --> DECISION{Triage decision}
+    DECISION -->|Supported and defenses refuted| FINDING[Verified finding]
+    DECISION -->|Concern remains unresolved| REVIEW[Observation for review]
+    DECISION -->|Innocent explanation supported| CLEARED[Cleared item]
+
+    subgraph GATE[6 · Deterministic verification and attestation]
+        direction LR
+        PATH[Resolve exact source path]
+        QUOTE[Match verbatim quotation]
+        MONEY[Validate supported amounts and currency]
+        DEDUPE[Prevent overlapping double-counting]
+        ATTEST[Verify GPT-5.6 response IDs<br/>model and token attestation]
+        PATH --> QUOTE --> MONEY --> DEDUPE --> ATTEST
+    end
+
+    FINDING --> PATH
+    REVIEW --> PATH
+    CLEARED --> PATH
+    MANIFEST -. original source content .-> PATH
+
+    ATTEST --> VERIFIED{Passes every gate?}
+    VERIFIED -->|No| REJECT[Discard unsupported claim]
+    VERIFIED -->|Yes| REPORT[Attested investigation report]
+
+    subgraph API[7 · Evidence API]
+        direction LR
+        GRAPH[Backend entity graph<br/>entities · accounts · relationships]
+        RANK[Ranked findings and observations]
+        SOURCES[Documents · pages · source passages]
+        STATUS[Live processing stages]
+    end
+
+    REPORT --> GRAPH
+    REPORT --> RANK
+    REPORT --> SOURCES
+    EVIDENCE -. progress .-> STATUS
+    TRIAGE -. progress .-> STATUS
+
+    subgraph UI[8 · Auditor workspace]
+        direction LR
+        EXPLORE[Explore graph and risk paths]
+        REASON[Inspect reasoning and contradiction chain]
+        PROOF[Open exact supporting evidence]
+        HUMAN[Confirm · reject · needs review]
+        EXPLORE --> REASON --> PROOF --> HUMAN
+    end
+
+    GRAPH --> EXPLORE
+    RANK --> REASON
+    SOURCES --> PROOF
+    STATUS --> EXPLORE
+    HUMAN -. human judgment remains final .-> REPORT
+
+    classDef ai fill:#eeeaff,stroke:#6c5ce7,color:#211b45
+    classDef verify fill:#e9f7f1,stroke:#2f8f68,color:#183e30
+    classDef risk fill:#fff0ed,stroke:#c65f4b,color:#5b241b
+    class EA1,EA2,EAN,P,X,J ai
+    class PATH,QUOTE,MONEY,DEDUPE,ATTEST,VERIFIED verify
+    class CAND,FINDING,REVIEW,REJECT risk
 ```
 
 ### 1. Generic ingestion
@@ -71,15 +175,47 @@ CorteX preserves nested folder structures and reads common audit evidence format
 
 Readable evidence is divided into bounded batches and analyzed concurrently with GPT-5.6. The model identifies facts, relationships, control failures, contradictions, and unusual transactions while retaining the supporting source filename and verbatim quotation.
 
-### 3. Cross-document synthesis
+### 3. Cross-document candidate generation
 
-The dossier-level pass combines observations across documents. This is where deeper schemes emerge: shared identifiers, inconsistent balances, suspicious timing, related parties, or evidence that does not reconcile across independent sources.
+The dossier-level pass combines observations across documents and proposes candidate findings. This is where deeper schemes emerge: shared identifiers, inconsistent balances, suspicious timing, related parties, or evidence that does not reconcile across independent sources. A candidate is not yet a finding—it must survive adversarial triage.
 
-### 4. Verification gate
+### 4. Adversarial triage: prosecutor, defense, judge
+
+False positives matter. An innocent discrepancy must not be presented as proven fraud, so every candidate becomes a small trial between three adversarial LLM roles:
+
+#### Prosecutor
+
+The prosecutor assembles the **minimal contradiction set**: the smallest collection of cited passages that cannot all be true simultaneously. It states the suspected issue in neutral audit language and estimates its supported monetary or materiality effect without double-counting overlapping concerns.
+
+#### Defense
+
+The defense receives the same evidence and actively tries to defeat the allegation. It searches for plausible explanations such as:
+
+- Timing and cut-off differences
+- VAT-inclusive versus VAT-exclusive amounts
+- Partial deliveries and credit notes
+- Foreign-exchange effects
+- Transposed digits or clerical mistakes
+- Translation and terminology differences
+- Missing but potentially legitimate supporting documents
+
+#### Judge
+
+The judge promotes a candidate only when the evidence supports the allegation **and** the defense explanations are refuted with citations. The outcome is deliberately tiered:
+
+| Outcome | Meaning |
+|---|---|
+| **Finding** | The contradiction and its refutation chain are supported by cited evidence |
+| **Observation for review** | A concern remains, but at least one innocent explanation is still plausible |
+| **Cleared item** | The discrepancy is explained or refuted by the available evidence |
+
+This structure matches the asymmetric risk of forensic auditing: CorteX aims for high-precision findings and is explicit about uncertainty instead of labeling every anomaly as fraud. The three roles are orchestrated inside the GPT-5.6 judgment stage and returned as a structured `triage` record containing `prosecutor`, `defense`, and `judge` reasoning.
+
+### 5. Deterministic verification gate
 
 Every proposed citation is checked against the original uploaded content. A finding without verified inculpatory evidence is discarded. The backend does not manufacture placeholder citations or silently publish an offline fallback report.
 
-### 5. Auditor workspace
+### 6. Auditor workspace
 
 Verified output becomes:
 
