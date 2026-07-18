@@ -28,6 +28,7 @@ export default function App() {
   const [investigationStarting, setInvestigationStarting] = useState(false)
   const [integrationError, setIntegrationError] = useState<string>()
   const [folderCacheLoaded, setFolderCacheLoaded] = useState(false)
+  const [activeDossierId, setActiveDossierId] = useState('')
   const uploadedFolder = useMemo(() => combineFolders(uploadedFolders), [uploadedFolders])
   useEffect(() => { void loadFoldersFromCache().then(setUploadedFolders).catch(() => undefined).finally(() => setFolderCacheLoaded(true)) }, [])
   const addUploadedFolder = (folder: UploadedFolder) => { setUploadedFolders((current) => { const next = [...current, folder]; void saveFoldersToCache(next).catch(() => undefined); return next }) }
@@ -41,7 +42,12 @@ export default function App() {
     if (!scope || investigationStarting) return
     setInvestigationStarting(true); setIntegrationError(undefined)
     try {
-      await api.uploadScope(scope)
+      await queryClient.cancelQueries({ queryKey: ['documents'] })
+      await queryClient.cancelQueries({ queryKey: ['summary'] })
+      await queryClient.cancelQueries({ queryKey: ['graph'] })
+      await queryClient.cancelQueries({ queryKey: ['findings'] })
+      const uploaded = await api.uploadScope(scope)
+      setActiveDossierId(uploaded.dossierId)
       await api.investigate()
       setInvestigationScope(scope); setFindingId(undefined); setSelectedGraphItem(undefined); setView('investigate')
       await queryClient.invalidateQueries({ queryKey: ['dossiers'] })
@@ -50,32 +56,37 @@ export default function App() {
     } finally { setInvestigationStarting(false) }
   }
   const dossierQuery = useQuery({ queryKey: ['dossiers'], queryFn: api.dossiers })
-  const dossierId = dossierQuery.data?.[0]?.id ?? ''
+  const dossierId = activeDossierId || dossierQuery.data?.[0]?.id || ''
   const summaryQuery = useQuery({ queryKey: ['summary', dossierId], queryFn: () => api.summary(dossierId), enabled: !!dossierId })
   const graphQuery = useQuery({ queryKey: ['graph', dossierId], queryFn: () => api.graph(dossierId), enabled: !!dossierId })
   const findingsQuery = useQuery({ queryKey: ['findings', dossierId], queryFn: () => api.findings(dossierId), enabled: !!dossierId })
   const documentsQuery = useQuery({ queryKey: ['documents', dossierId], queryFn: () => api.documents(dossierId), enabled: !!dossierId })
   const findingQuery = useQuery({ queryKey: ['finding', findingId], queryFn: () => api.finding(findingId!), enabled: !!findingId })
-  const investigationStatusQuery = useQuery({ queryKey: ['investigation-status'], queryFn: api.investigationSummary, enabled: view === 'investigate', refetchInterval: (query) => query.state.data?.dossier_status === 'processing' ? 1500 : false })
+  const investigationStatusQuery = useQuery({ queryKey: ['investigation-status'], queryFn: api.investigationSummary, enabled: view === 'investigate', refetchInterval: (query) => query.state.data?.dossier_status === 'processing' ? 750 : false })
   const reviewMutation = useMutation({ mutationFn: ({ status }: { status: ReviewStatus }) => api.review(findingId!, { status }), onSuccess: (updated) => { queryClient.setQueryData(['finding', findingId], updated); queryClient.invalidateQueries({ queryKey: ['findings', dossierId] }) } })
   const allQueries = [dossierQuery, graphQuery, findingsQuery, documentsQuery]
   const error = allQueries.find((query) => query.isError)?.error
 
   useEffect(() => { if (findingId) setSelectedGraphItem(undefined) }, [findingId])
   useEffect(() => {
-    if (!folderCacheLoaded) return
-    const synchronize = async () => {
+    if (!folderCacheLoaded || !uploadedFolder || view !== 'documents' || investigationStarting) return
+    let cancelled = false
+    const synchronizeDocuments = async () => {
       try {
-        if (uploadedFolder) await api.uploadScope(uploadedFolder)
-        else await api.clearScope()
-        await queryClient.invalidateQueries({ queryKey: ['documents', dossierId] })
+        await queryClient.cancelQueries({ queryKey: ['documents'] })
+        const uploaded = await api.uploadScope(uploadedFolder)
+        if (cancelled) return
+        setActiveDossierId(uploaded.dossierId)
+        await queryClient.invalidateQueries({ queryKey: ['documents', uploaded.dossierId] })
         await queryClient.invalidateQueries({ queryKey: ['dossiers'] })
       } catch (reason) {
+        if (cancelled) return
         setIntegrationError(reason instanceof Error ? reason.message : 'Could not synchronize folders with the backend.')
       }
     }
-    void synchronize()
-  }, [folderCacheLoaded, uploadedFolders, uploadedFolder, dossierId, queryClient])
+    void synchronizeDocuments()
+    return () => { cancelled = true }
+  }, [folderCacheLoaded, uploadedFolder, view, investigationStarting, queryClient])
   useEffect(() => {
     if (investigationStatusQuery.data?.dossier_status === 'ready' && investigationStatusQuery.data.progress === 100) {
       void queryClient.invalidateQueries({ queryKey: ['graph', dossierId] })
@@ -107,7 +118,7 @@ export default function App() {
     />}
     {view === 'investigate' && <div className="investigation-page">
       {findingId && findingQuery.data ? <FindingDetail finding={findingQuery.data} isUpdating={reviewMutation.isPending} onBack={() => setFindingId(undefined)} onReview={(status) => reviewMutation.mutate({ status })} onCitation={openCitation}/>
-      : <><div className="investigation-main"><div className="investigation-heading"><div><p className="eyebrow">Entity intelligence · {investigationScope?.rootName ?? dossierQuery.data?.[0]?.name ?? 'No active dossier'}</p><h1>{investigationStatusQuery.data?.dossier_status === 'processing' ? 'Analyzing evidence…' : 'Follow the money.'}</h1></div><div><span className="live-dot"/> {investigationStatusQuery.data?.dossier_status === 'processing' ? `${investigationStatusQuery.data.processed_files} of ${investigationStatusQuery.data.progress_total} files` : `${graphQuery.data?.nodes.length ?? 0} entities · ${graphQuery.data?.edges.length ?? 0} relationships`}</div></div>{investigationStatusQuery.data?.dossier_status === 'processing' ? <InvestigationJourney status={investigationStatusQuery.data}/> : graphQuery.data ? <InvestigationGraph data={graphQuery.data} selected={selectedGraphItem} onSelect={setSelectedGraphItem}/> : <div className="panel-loader"><LoaderCircle className="spin"/>Building entity graph…</div>}{selectedGraphItem && <DetailDrawer item={selectedGraphItem} findings={findingsQuery.data ?? []} onClose={() => setSelectedGraphItem(undefined)} onFinding={setFindingId} onCitation={openCitation}/>}</div>{findingsQuery.data && <FindingList findings={findingsQuery.data} activeId={findingId} onSelect={setFindingId}/>}</>}
+      : <><div className="investigation-main"><div className="investigation-heading"><div><p className="eyebrow">Entity intelligence · {investigationScope?.rootName ?? dossierQuery.data?.[0]?.name ?? 'No active dossier'}</p><h1>{investigationStatusQuery.data?.dossier_status === 'processing' ? 'Analyzing evidence…' : 'Follow the money.'}</h1></div><div><span className="live-dot"/> {investigationStatusQuery.data?.dossier_status === 'processing' ? investigationStatusQuery.data.stage : `${graphQuery.data?.nodes.length ?? 0} entities · ${graphQuery.data?.edges.length ?? 0} relationships`}</div></div>{investigationStatusQuery.data?.dossier_status === 'processing' ? <InvestigationJourney status={investigationStatusQuery.data}/> : graphQuery.data ? <InvestigationGraph data={graphQuery.data} selected={selectedGraphItem} onSelect={setSelectedGraphItem}/> : <div className="panel-loader"><LoaderCircle className="spin"/>Building entity graph…</div>}{selectedGraphItem && <DetailDrawer item={selectedGraphItem} findings={findingsQuery.data ?? []} onClose={() => setSelectedGraphItem(undefined)} onFinding={setFindingId} onCitation={openCitation}/>}</div>{findingsQuery.data && <FindingList findings={findingsQuery.data} activeId={findingId} onSelect={setFindingId}/>}</>}
     </div>}
     {citation && <EvidenceViewer citation={citation} document={documentsQuery.data?.find((doc) => doc.id === citation.documentId)} onClose={() => setCitation(undefined)}/>} 
     {investigationStarting && <div className="integration-toast"><LoaderCircle className="spin"/><span>Uploading selected scope to AuditPipe…</span></div>}
