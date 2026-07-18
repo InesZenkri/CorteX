@@ -1,0 +1,15 @@
+import { ArrowLeft, Check, CheckCircle2, ExternalLink, FileText, ShieldCheck, X, XCircle } from 'lucide-react'
+import type { FindingDetail as FindingDetailType, ReviewStatus } from '../types'
+import { formatMoney, kindLabel } from '../lib/format'
+
+export function FindingDetail({ finding, isUpdating, onBack, onReview, onCitation }: { finding: FindingDetailType; isUpdating: boolean; onBack: () => void; onReview: (status: ReviewStatus) => void; onCitation: (id: string) => void }) {
+  return <div className="finding-detail">
+    <div className="detail-header"><button className="back-button" onClick={onBack}><ArrowLeft size={16}/> Back to graph</button><div className="detail-actions"><button disabled={isUpdating} className="reject" onClick={() => onReview('rejected')}><X size={15}/> Reject</button><button disabled={isUpdating} className="confirm" onClick={() => onReview('confirmed')}><Check size={15}/> Confirm finding</button></div></div>
+    <div className="detail-scroll"><div className="finding-title"><div className="finding-badges"><span className={`kind kind-${finding.kind}`}>{kindLabel[finding.kind]}</span><span className={`severity-text ${finding.severity}`}>{finding.severity} severity</span><span><ShieldCheck size={13}/> {finding.confidence}% confidence</span></div><h1>{finding.title}</h1><p>{finding.claim}</p>{finding.amount && <button className="hero-amount" onClick={() => onCitation(finding.amount!.citation.id)}><span>Affected amount</span><strong>{formatMoney(finding.amount.amount, finding.amount.currency)}</strong><small>View source <ExternalLink size={12}/></small></button>}</div>
+      <section className="reasoning-section"><div className="section-heading"><span>01</span><div><p className="eyebrow">Code-verified</p><h2>Deterministic checks</h2></div></div><div className="checks-grid">{finding.checks.map((check) => <article key={check.label} className={check.result}><div>{check.result === 'passed' ? <CheckCircle2 size={17}/> : <XCircle size={17}/>}<strong>{check.label}</strong></div><p>{check.detail}</p></article>)}</div></section>
+      <section className="reasoning-section"><div className="section-heading"><span>02</span><div><p className="eyebrow">Minimal contradiction set</p><h2>These statements cannot all be true</h2></div></div><div className="contradiction-chain">{finding.contradictions.map((item, index) => <button key={item.id} onClick={() => onCitation(item.citation.id)}><span className="chain-number">{index + 1}</span><div><strong>{item.label}</strong><p>{item.statement}</p><small><FileText size={12}/>{item.citation.documentName} · p. {item.citation.page}</small></div><ExternalLink size={15}/></button>)}</div></section>
+      <section className="reasoning-section"><div className="section-heading"><span>03</span><div><p className="eyebrow">Adversarial review</p><h2>Innocent explanations considered</h2></div></div><div className="defense-list">{finding.defenses.map((defense) => <article key={defense.explanation}><div><strong>{defense.explanation}</strong><span className={defense.verdict}>{defense.verdict}</span></div><p>{defense.detail}</p></article>)}</div></section>
+    </div>
+  </div>
+}
+
