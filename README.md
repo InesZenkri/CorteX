@@ -23,7 +23,7 @@ Audit teams work across PDFs, spreadsheets, exports, contracts, confirmations, i
 
 At the same time, false positives are expensive. A discrepancy may come from foreign exchange, cut-off timing, VAT treatment, partial delivery, or a credit note. An investigation tool therefore needs more than pattern recognition—it needs provenance, adversarial reasoning, and a human review path.
 
-This is the broader problem space in which [Cortea](https://www.cortea.ai/de) works: AI-assisted audit quality, consistency checks, traceable evidence, and workflows where auditors retain control over conclusions. **CorteX is an independent hackathon project and is not affiliated with or endorsed by Cortea.**
+This is the broader problem space in which [Cortea](https://www.cortea.ai/de) works: AI-assisted audit quality, consistency checks, traceable evidence, and workflows where auditors retain control over conclusions. 
 
 ## Our answer
 
