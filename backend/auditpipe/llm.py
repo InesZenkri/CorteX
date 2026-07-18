@@ -1,132 +1,110 @@
-"""GPT-5.6 access layer.
-
-Responsibilities kept to what LLMs are reliably good at:
-  * classify a document (invoice / bank confirmation / financial statement / ...)
-  * extract structured records from UNSTRUCTURED text (PDF/DOCX) with a verbatim
-    source quote per record
-  * resolve entity aliases across German/English
-  * write the narrative + candidate innocent explanations for triage
-
-Hard contract: every extracted value must be accompanied by a `quote` that is a
-verbatim substring of the source text. `verify_quotes()` drops any record whose
-quote does not string-match the source — this makes hallucinated numbers
-structurally unable to reach the ledger.
-
-If the OpenAI SDK or API key is unavailable, the module runs in OFFLINE mode and
-raises on any call, so orchestration can skip LLM steps and use deterministic
-parsers (GDPdU/CSV need no LLM at all).
-"""
+"""Strict, attestable GPT-5.6 access through the OpenAI Responses API."""
 
 from __future__ import annotations
+
 import json
 import os
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from . import config
 
-try:                                   # optional dependency
-    from openai import OpenAI          # type: ignore
-    _SDK = True
-except Exception:                      # pragma: no cover
-    _SDK = False
+try:
+    from openai import OpenAI
+except ImportError as exc:  # pragma: no cover - deployment dependency failure
+    OpenAI = None
+    _IMPORT_ERROR = exc
+else:
+    _IMPORT_ERROR = None
 
 
 class LLMUnavailable(RuntimeError):
-    pass
+    """Raised when a verified GPT-5.6 response cannot be obtained."""
+
+
+@dataclass(frozen=True)
+class CallReceipt:
+    purpose: str
+    response_id: str
+    requested_model: str
+    response_model: str
+    input_tokens: int
+    output_tokens: int
 
 
 def available() -> bool:
-    return _SDK and bool(os.environ.get(config.LLM_API_KEY_ENV)) and not config.OFFLINE
+    return OpenAI is not None and bool(os.getenv("OPENAI_API_KEY"))
 
 
-class LLM:
-    def __init__(self, model: str | None = None):
-        self.model = model or config.LLM_MODEL
+def _is_required_model(returned_model: str) -> bool:
+    normalized = (returned_model or "").lower()
+    return (
+        normalized == config.REQUIRED_MODEL
+        or normalized == config.EXPECTED_RESPONSE_MODEL
+        or normalized.startswith(f"{config.EXPECTED_RESPONSE_MODEL}-")
+    )
+
+
+class AuditLLM:
+    def __init__(self, cfg: config.Config):
         if not available():
-            raise LLMUnavailable(
-                "GPT-5.6 unavailable (missing SDK, OPENAI_API_KEY, or OFFLINE=1). "
-                "Deterministic parsers will be used instead."
+            detail = f": {_IMPORT_ERROR}" if _IMPORT_ERROR else ""
+            raise LLMUnavailable(f"OPENAI_API_KEY and the OpenAI SDK are required{detail}")
+        self.cfg = cfg
+        self.client = OpenAI(timeout=cfg.request_timeout_seconds)
+        self.receipts: list[CallReceipt] = []
+
+    def json_response(self, purpose: str, instructions: str, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            response = self.client.responses.create(
+                model=self.cfg.model,
+                reasoning={"effort": self.cfg.reasoning_effort},
+                instructions=instructions,
+                input=json.dumps({"response_format": "json", "payload": payload}, ensure_ascii=False, default=str),
+                text={"format": {"type": "json_object"}, "verbosity": "medium"},
+                max_output_tokens=self.cfg.max_output_tokens,
+                store=False,
             )
-        self._client = OpenAI()
+        except Exception as exc:
+            raise LLMUnavailable(f"GPT-5.6 request failed for {purpose}: {exc}") from exc
 
-    # -- core call: always returns parsed JSON -----------------------------
-    def _json_call(self, system: str, user: str) -> dict:
-        last = None
-        for _ in range(config.LLM_MAX_RETRIES):
-            try:
-                resp = self._client.chat.completions.create(
-                    model=self.model,
-                    temperature=config.LLM_TEMPERATURE,
-                    response_format={"type": "json_object"},
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                )
-                return json.loads(resp.choices[0].message.content)
-            except Exception as e:               # retry on transient/parse errors
-                last = e
-        raise LLMUnavailable(f"LLM call failed after retries: {last}")
+        returned_model = str(getattr(response, "model", ""))
+        if getattr(response, "status", None) != "completed":
+            raise LLMUnavailable(f"GPT-5.6 response for {purpose} was not completed")
+        if not _is_required_model(returned_model):
+            raise LLMUnavailable(
+                f"Model attestation failed for {purpose}: requested {self.cfg.model}, "
+                f"API returned {returned_model or 'no model'}"
+            )
 
-    # -- document classification + extraction ------------------------------
-    def extract_document(self, filename: str, text: str) -> dict:
-        """Return {doc_type, records:[{fields, quote}], entities:[...]}."""
-        system = (
-            "You are a forensic-audit extraction engine. Classify the document and "
-            "extract structured records. For EVERY record you MUST include a 'quote' "
-            "field containing a VERBATIM substring copied from the source text that "
-            "supports the record's key figures. Never invent numbers. Respond ONLY "
-            "with JSON of shape: {\"doc_type\": str, \"records\": [{\"fields\": object, "
-            "\"quote\": str}], \"entities\": [{\"name\": str, \"role\": str, "
-            "\"ids\": object}]}. doc_type is one of: invoice, order, goods_receipt, "
-            "bank_confirmation, financial_statement, trial_balance, contract, "
-            "authorization_matrix, shareholder_list, protocol, other."
-        )
-        user = f"FILENAME: {filename}\n\nSOURCE TEXT:\n{text[:120000]}"
-        data = self._json_call(system, user)
-        data["records"] = verify_quotes(text, data.get("records", []))
-        return data
+        usage = getattr(response, "usage", None)
+        self.receipts.append(CallReceipt(
+            purpose=purpose,
+            response_id=str(response.id),
+            requested_model=self.cfg.model,
+            response_model=returned_model,
+            input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+            output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+        ))
+        try:
+            parsed = json.loads(response.output_text)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise LLMUnavailable(f"GPT-5.6 returned invalid JSON for {purpose}") from exc
+        if not isinstance(parsed, dict):
+            raise LLMUnavailable(f"GPT-5.6 returned a non-object JSON value for {purpose}")
+        return parsed
 
-    # -- entity resolution -------------------------------------------------
-    def resolve_entities(self, names: list[str]) -> dict:
-        """Group name variants (DE/EN) that refer to the same legal entity."""
-        system = (
-            "Group the following counterparty names that refer to the SAME legal "
-            "entity (handle German/English variants, GmbH/AG suffixes, abbreviations). "
-            "Respond ONLY as JSON: {\"groups\": [{\"canonical\": str, "
-            "\"aliases\": [str]}]}."
-        )
-        return self._json_call(system, "NAMES:\n" + "\n".join(sorted(set(names))))
-
-    # -- triage narrative + defense ---------------------------------------
-    def defend_and_narrate(self, finding_json: dict) -> dict:
-        """Given a candidate finding + its evidence, produce a plain-language
-        narrative and a list of innocent explanations an auditor should rule out.
-        This informs (does not decide) the deterministic gate."""
-        system = (
-            "You are the DEFENSE in an audit triage. Given a candidate finding and "
-            "its cited evidence, (1) write a concise, neutral narrative an auditor "
-            "can read, and (2) list plausible INNOCENT explanations, each naming the "
-            "specific document that would refute the concern if it existed. Respond "
-            "ONLY as JSON: {\"narrative\": str, \"innocent_explanations\": "
-            "[{\"explanation\": str, \"refuting_document\": str}]}."
-        )
-        return self._json_call(system, json.dumps(finding_json, default=str))
+    def attestation(self) -> dict[str, Any]:
+        if not self.receipts:
+            raise LLMUnavailable("No GPT-5.6 calls were completed")
+        return {
+            "required": True,
+            "verified": all(_is_required_model(receipt.response_model) for receipt in self.receipts),
+            "requested_model": self.cfg.model,
+            "response_models": sorted({receipt.response_model for receipt in self.receipts}),
+            "calls": [asdict(receipt) for receipt in self.receipts],
+        }
 
 
-# -- quote verification (runs even without the SDK) -------------------------
-def _norm(s: str) -> str:
-    return " ".join(str(s).split()).lower()
-
-
-def verify_quotes(source_text: str, records: list[dict]) -> list[dict]:
-    """Keep only records whose 'quote' is a verbatim (whitespace-normalized)
-    substring of the source. Anti-hallucination gate for extracted numbers."""
-    hay = _norm(source_text)
-    kept = []
-    for r in records:
-        q = _norm(r.get("quote", ""))
-        if q and q in hay:
-            r["_verified"] = True
-            kept.append(r)
-    return kept
+# Backwards-compatible name for callers that import LLM directly.
+LLM = AuditLLM

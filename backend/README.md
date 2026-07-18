@@ -1,96 +1,72 @@
-# AuditPipe — forensic-audit pipeline (GPT-5.6)
+# AuditPipe — strict GPT-5.6 forensic audit
 
-Reads a dossier of accounting exports and documents, finds financial-statement
-fraud, and writes a fully source-cited JSON report. Built so it generalizes to
-an **unseen** dossier: detectors key on *structural* signals, never on
-dossier-specific ids or decoy-specific text.
+AuditPipe ingests an arbitrary dossier, sends every readable evidence batch to
+GPT-5.6, asks GPT-5.6 to synthesize the dossier-level conclusions, verifies all
+returned quotes against the original files, and writes an attested report for
+the CorteX frontend.
 
-## Design
-
-GPT-5.6 does what LLMs are good at — classify documents, extract records from
-unstructured PDFs/DOCX (each with a verbatim source quote), resolve entity
-aliases, and write the defense narrative. **Deterministic code owns every
-number and every promote/clear decision.** Invariant: no number reaches the
-output without a quote that code re-verified against the source (`verify_quotes`).
-
-```
-data/ ─▶ ingest ─▶ Evidence Ledger (SQLite + cell provenance)
-                        │
-                        ├─▶ detectors (structural)         ── candidates + inculpatory evidence
-                        ├─▶ exculpatory gate (defense)     ── goods receipt / four-eyes / investment / disclosure
-                        └─▶ promotion (deterministic)      ── confirmed | lead | cleared, with confidence
-                                    │
-                                    ▼
-                          output/findings.json
+```text
+Generic ingestion
+  → GPT-5.6 evidence analysis for every batch
+  → GPT-5.6 dossier synthesis and adversarial judgment
+  → deterministic verbatim-quote verification
+  → model-attested JSON
 ```
 
+The code contains no sample-company identifiers, account exclusions, fixed
+fraud findings, expected finding counts, materiality values, detector weights,
+or dossier-specific fraud phrases. File structures and fraud categories are
+discovered from the uploaded evidence. The only pinned model invariant is
+`gpt-5.6`.
 
+## Mandatory model processing
 
-## Detectors (all generalized, no hard-coded ids)
+Offline report generation is intentionally unavailable. A run fails without
+the OpenAI SDK, `OPENAI_API_KEY`, a completed API response, or a GPT-5.6 model
+attestation. Each report records every response ID, requested model, returned
+model, and token count under `model_attestation`.
 
-- **fictitious_vendor** — new vendor + creator==approver + one user books&pays +
-no goods receipt + fast invoice→payment (+round-amount bonus). Net amount.
-- **capex_repair** — asset addition whose *description* is maintenance/repair
-(lexicon + LLM classification); cleared by genuine-investment wording.
-- **cutoff** — prior-period service date, next-period invoice, no accrual.
-- **structuring** — same payee + same day, ≥N payments each in [0.8·L, L), sum>L.
-Keys on amounts+dates only, so renaming beleg text can't hide it.
-- **related_party** — counterparty in the shareholder list; disclosed ⇒
-downgraded but still tested for off-market (round + ≥ tolerance + year-end).
-
-
-
-## Run
+The implementation uses the OpenAI Responses API with medium reasoning effort by
+default. Configure the effort with `AUDIT_REASONING_EFFORT`; the model remains
+pinned to GPT-5.6.
 
 ## Run
 
 ```bash
+cd backend
 pip install -e .
-# Put OPENAI_API_KEY=sk-... in the project-root .env (or backend/.env)
+export OPENAI_API_KEY=sk-...
 
-# CLI
-python -m auditpipe.run --data data --out output/findings.json
-# deterministic only (no network / no LLM — structured files need no LLM):
-python -m auditpipe.run --data data --out output/findings.json --no-llm
+python -m auditpipe.run \
+  --data data \
+  --out output/findings.json \
+  --evidence output/evidence.json
 
-# HTTP API for the frontend (upload + investigate + findings)
 python -m auditpipe.server
 ```
 
-HTTP uploads and generated evidence are written under `backend/runtime/` by
-default, keeping the tracked sample dossier in `backend/data/` unchanged.
-Override this location with `CORTEX_RUNTIME_DIR` when deploying.
+The frontend API writes uploaded dossiers and generated reports under
+`backend/runtime/` by default. Override that root with `CORTEX_RUNTIME_DIR`.
 
-Model defaults to `gpt-5.6` (override with `--model` or `AUDIT_MODEL`).
-The OpenAI key is loaded automatically from `.env` via `python-dotenv`.
+## Configuration
 
-## Output (findings.json)
+- `OPENAI_API_KEY` — required.
+- `AUDIT_REASONING_EFFORT` — `low`, `medium`, `high`, `xhigh`, or `max`.
+- `AUDIT_BATCH_CHARACTERS` — maximum evidence characters sent in one analysis batch.
+- `AUDIT_MAX_OUTPUT_TOKENS` — response budget for each GPT call.
+- `AUDIT_PARALLEL_BATCHES` — maximum concurrent evidence-analysis requests.
+- `AUDIT_REQUEST_TIMEOUT_SECONDS` — maximum duration of one OpenAI request.
+- `AUDIT_PROMPTS_DIR` — optional directory containing the two audit prompt files.
+- `CORTEX_ALLOWED_ORIGINS` — comma-separated frontend origins.
+- `CORTEX_API_HOST` and `CORTEX_API_PORT` — API listener settings.
 
-```jsonc
-{
-  "model": "gpt-5.6",
-  "materiality": { "overall": 400000, "tolerance": 300000, ... },
-  "summary": { "confirmed": 9, "leads": 0, "cleared": 3,
-               "profit_overstatement_eur": 342800,
-               "profit_overstatement_vs_tolerance": "exceeds" },
-  "findings": [ { "id","scheme","criterion","title","amount_eur","status",
-                  "severity","confidence",
-                  "inculpatory":[{"text","source":{"file","locus","quote"}}],
-                  "exculpatory":[...], "narrative":"" } ],
-  "cleared_decoys": [ ... ]   // considered and dismissed, with the refuting source
-}
-```
+## Integrity rules
 
-
-
-## Result on the sample dossier (deterministic mode)
-
-9 confirmed across all four schemes (fictitious vendor €248k, capitalized
-repairs 6×=€150.8k, cut-off €192k, structuring €39k); 3 decoys cleared with
-their refuting source (€480k real investment, disclosed €220k parent charge,
-legitimate new vendor with goods receipts); 0 false positives. Profit
-overstatement €342,800 — exceeds tolerable misstatement.
-
-```
-confirmed=9 leads=0 cleared=3 profit_overstatement=EUR 342,800 (exceeds tolerance)
-```
+- The API never serves a legacy, offline, unattested, or non-GPT-5.6 report.
+- Every accepted finding requires at least one inculpatory quote that resolves
+  verbatim to an uploaded source file.
+- Invalid citations are removed; a finding without verified inculpatory evidence
+  is discarded.
+- No synthetic fallback findings or citations are created.
+- Profit effect is supplied per finding by GPT-5.6 and summed by code without a
+  fixed fraud-scheme allowlist.

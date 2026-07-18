@@ -5,11 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "auditpipe"
 version = "0.1.0"
-description = "Forensic-audit pipeline (GPT-5.6)"
+description = "Strict GPT-5.6 forensic-audit pipeline"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "openai>=1.40",
+  "openai>=2.46.0",
   "openpyxl>=3.1",
   "pypdf>=4.0",
   "python-docx>=1.1",

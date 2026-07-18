@@ -11,15 +11,11 @@ def main():
     ap = argparse.ArgumentParser(description="AuditPipe forensic-audit pipeline (GPT-5.6)")
     ap.add_argument("--data", default="data", help="folder containing the dossier")
     ap.add_argument("--out", default="output/findings.json", help="output JSON path")
-    ap.add_argument("--db", default="output/evidence.db", help="working SQLite path")
-    ap.add_argument("--model", default=config.LLM_MODEL, help="LLM model (default gpt-5.6)")
-    ap.add_argument("--no-llm", action="store_true",
-                    help="deterministic parsers only (skip GPT-5.6)")
+    ap.add_argument("--evidence", default="output/evidence.json", help="verified intermediate evidence path")
     args = ap.parse_args()
 
-    cfg = config.Config(data_dir=args.data, out_path=args.out, db_path=args.db,
-                        model=args.model)
-    report = run(cfg, use_llm=not args.no_llm)
+    cfg = config.Config(data_dir=args.data, out_path=args.out, db_path=args.evidence)
+    report = run(cfg, use_llm=True)
     s = report["summary"]
     print(f"model={report['model']} llm_used={report['llm_used']}")
     print(f"confirmed={s['confirmed']} leads={s['leads']} cleared={s['cleared']} "

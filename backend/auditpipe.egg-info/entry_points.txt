@@ -1,2 +1,3 @@
 [console_scripts]
 auditpipe = auditpipe.run:main
+auditpipe-server = auditpipe.server:main

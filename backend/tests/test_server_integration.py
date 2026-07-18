@@ -16,7 +16,7 @@ class ServerIntegrationTest(unittest.TestCase):
         root = Path(self.temp.name)
         self.data = root / "data"
         self.output = root / "output" / "findings.json"
-        self.database = root / "output" / "evidence.db"
+        self.database = root / "output" / "evidence.json"
         self.patches = [
             patch.object(server, "DATA_DIR", self.data),
             patch.object(server, "OUT_PATH", self.output),
@@ -41,24 +41,41 @@ class ServerIntegrationTest(unittest.TestCase):
         self.assertEqual(response.json()["files"], 2)
         self.assertTrue((self.data / "Root/sub/evidence.txt").exists())
 
-        documents = self.client.get("/api/dossiers/active/documents").json()
+        dossier_id = response.json()["dossierId"]
+        documents = self.client.get(f"/api/dossiers/{dossier_id}/documents").json()
         self.assertEqual(len(documents), 2)
         downloaded = self.client.get(f"/api/documents/{documents[0]['id']}/file")
         self.assertEqual(downloaded.status_code, 200)
 
         report = {
-            "generated_at": "2026-07-18T00:00:00Z",
+            "generated_at": "test-generated-at",
+            "model": "gpt-5.6",
+            "llm_used": True,
+            "model_attestation": {
+                "required": True,
+                "verified": True,
+                "requested_model": "gpt-5.6",
+                "response_models": ["gpt-5.6-sol"],
+                "calls": [{
+                    "response_id": "resp_test", "requested_model": "gpt-5.6",
+                    "response_model": "gpt-5.6-sol",
+                }],
+            },
             "summary": {"confirmed": 0, "leads": 0, "cleared": 0, "profit_overstatement_eur": 0, "profit_overstatement_vs_tolerance": "within"},
             "findings": [], "cleared_decoys": [],
         }
 
-        def fake_pipeline(_config, use_llm=True):
+        def fake_pipeline(_config, use_llm=True, progress=None):
+            if progress:
+                progress(95, "Test synthesis")
             self.output.parent.mkdir(parents=True, exist_ok=True)
             self.output.write_text(json.dumps(report), encoding="utf-8")
             return report
 
         with patch.object(server, "run_pipeline", fake_pipeline):
-            started = self.client.post("/api/investigate", json={"use_llm": False})
+            refused = self.client.post("/api/investigate", json={"use_llm": False})
+            self.assertEqual(refused.status_code, 422)
+            started = self.client.post("/api/investigate")
             self.assertEqual(started.status_code, 200)
             for _ in range(50):
                 status = self.client.get("/api/investigation/summary").json()

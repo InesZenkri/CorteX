@@ -23,7 +23,7 @@ npm run dev:frontend
 ```
 
 Vite proxies `/api` to FastAPI on port 8000. Set `VITE_API_BASE_URL` only when the API is hosted elsewhere. The legacy demo API is available explicitly with `VITE_USE_MOCK_API=true`.
-Investigations default to deterministic mode so the integrated workflow runs without an API key. Set `VITE_USE_LLM=true` and provide `OPENAI_API_KEY` in the project or backend `.env` to enable the LLM pass.
+Investigations require GPT-5.6 processing. Provide `OPENAI_API_KEY` in the project or backend `.env`; the backend rejects offline or unattested report generation.
 
 ## Quality checks
 

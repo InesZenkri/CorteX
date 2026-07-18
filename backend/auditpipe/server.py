@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import logging
 import shutil
 import threading
-import os
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -16,16 +18,20 @@ from pydantic import BaseModel, Field
 from . import api_adapt, config
 from .pipeline import run as run_pipeline
 
+logger = logging.getLogger(__name__)
+
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 RUNTIME_DIR = Path(os.getenv("CORTEX_RUNTIME_DIR", BACKEND_DIR / "runtime"))
 DATA_DIR = RUNTIME_DIR / "data"
 OUT_PATH = RUNTIME_DIR / "output" / "findings.json"
-DB_PATH = RUNTIME_DIR / "output" / "evidence.db"
+DB_PATH = RUNTIME_DIR / "output" / "evidence.json"
 
 app = FastAPI(title="CorteX Evidence API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[origin.strip() for origin in os.getenv(
+        "CORTEX_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+    ).split(",") if origin.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -33,13 +39,14 @@ app.add_middleware(
 
 _lock = threading.Lock()
 _state: dict[str, Any] = {
-    "id": api_adapt.DOSSIER_ID,
+    "id": uuid.uuid4().hex,
     "name": "Active dossier",
     "company": "Uploaded engagement",
     "period": "",
     "status": "ready",
     "progress": 0,
     "error": None,
+    "stage": "Ready",
     "file_count": 0,
 }
 
@@ -70,7 +77,7 @@ def _clear_data_dir() -> None:
 
 
 def _safe_relpath(raw: str) -> Path:
-    # Strip the browser's root folder segment: "MyDossier/Sachkonten/x.txt" → "Sachkonten/x.txt"
+    # Browser directory uploads include one selected-root segment.
     parts = Path(raw.replace("\\", "/")).parts
     if not parts:
         raise HTTPException(400, "Empty file path")
@@ -104,6 +111,7 @@ def investigation_summary() -> dict[str, Any]:
     summary["dossier_status"] = _state["status"]
     summary["progress"] = _state["progress"]
     summary["error"] = _state["error"]
+    summary["stage"] = _state["stage"]
     summary["file_count"] = _state["file_count"] or _count_files()
     return summary
 
@@ -131,36 +139,45 @@ async def upload_dossier(files: list[UploadFile] = File(...)) -> dict[str, Any]:
             OUT_PATH.unlink()
 
         _state.update({
+            "id": uuid.uuid4().hex,
             "name": (files[0].filename or "dossier").split("/")[0],
             "status": "ready",
             "progress": 0,
             "error": None,
+            "stage": "Upload complete",
             "file_count": written,
             "period": "",
         })
 
-    return {"ok": True, "files": written, "dossierId": api_adapt.DOSSIER_ID}
+    return {"ok": True, "files": written, "dossierId": _state["id"]}
 
 
-def _run_job(use_llm: bool) -> None:
+def _run_job() -> None:
     try:
         _state["status"] = "processing"
         _state["progress"] = 15
         _state["error"] = None
+        _state["stage"] = "Preparing GPT-5.6 investigation"
         cfg = config.Config(
             data_dir=str(DATA_DIR),
             out_path=str(OUT_PATH),
             db_path=str(DB_PATH),
         )
-        _state["progress"] = 40
-        report = run_pipeline(cfg, use_llm=use_llm)
+        def update_progress(percent: int, stage: str) -> None:
+            _state["progress"] = percent
+            _state["stage"] = stage
+
+        report = run_pipeline(cfg, use_llm=True, progress=update_progress)
         _state["progress"] = 100
         _state["status"] = "ready"
+        _state["stage"] = "Investigation complete"
         _state["period"] = report.get("generated_at", "")
     except Exception as exc:  # noqa: BLE001 — surface to UI
+        logger.exception("GPT-5.6 investigation failed")
         _state["status"] = "failed"
         _state["progress"] = 0
         _state["error"] = str(exc)
+        _state["stage"] = "Investigation failed"
 
 
 @app.post("/api/investigate")
@@ -170,28 +187,32 @@ def investigate(body: InvestigateRequest | None = None) -> dict[str, Any]:
     if _state["status"] == "processing":
         raise HTTPException(409, "Investigation already running")
 
-    use_llm = True if body is None else body.use_llm
+    if body is not None and body.use_llm is not True:
+        raise HTTPException(422, "GPT-5.6 processing is mandatory")
     with _lock:
         if _state["status"] == "processing":
             raise HTTPException(409, "Investigation already running")
         _state["status"] = "processing"
         _state["progress"] = 5
         _state["error"] = None
-    thread = threading.Thread(target=_run_job, args=(use_llm,), daemon=True)
+        _state["stage"] = "Starting background worker"
+        if OUT_PATH.exists():
+            OUT_PATH.unlink()
+    thread = threading.Thread(target=_run_job, daemon=True)
     thread.start()
-    return {"ok": True, "status": "processing", "dossierId": api_adapt.DOSSIER_ID}
+    return {"ok": True, "status": "processing", "dossierId": _state["id"]}
 
 
 @app.get("/api/dossiers/{dossier_id}/summary")
 def dossier_summary(dossier_id: str) -> dict[str, Any]:
-    if dossier_id != api_adapt.DOSSIER_ID:
+    if dossier_id != _state["id"]:
         raise HTTPException(404, "Dossier not found")
     return api_adapt.dossier_summary(_report(), _count_files())
 
 
 @app.get("/api/dossiers/{dossier_id}/findings")
 def dossier_findings(dossier_id: str) -> list[dict[str, Any]]:
-    if dossier_id != api_adapt.DOSSIER_ID:
+    if dossier_id != _state["id"]:
         raise HTTPException(404, "Dossier not found")
     report = _report()
     if not report:
@@ -201,14 +222,14 @@ def dossier_findings(dossier_id: str) -> list[dict[str, Any]]:
 
 @app.get("/api/dossiers/{dossier_id}/documents")
 def dossier_documents(dossier_id: str) -> list[dict[str, Any]]:
-    if dossier_id != api_adapt.DOSSIER_ID:
+    if dossier_id != _state["id"]:
         raise HTTPException(404, "Dossier not found")
     return api_adapt.list_documents(DATA_DIR)
 
 
 @app.get("/api/dossiers/{dossier_id}/graph")
 def dossier_graph(dossier_id: str) -> dict[str, Any]:
-    if dossier_id != api_adapt.DOSSIER_ID:
+    if dossier_id != _state["id"]:
         raise HTTPException(404, "Dossier not found")
     return api_adapt.build_graph(_report())
 
@@ -262,7 +283,11 @@ def get_document_file(document_id: str) -> FileResponse:
 
 def main() -> None:
     import uvicorn
-    uvicorn.run("auditpipe.server:app", host="127.0.0.1", port=8000)
+    uvicorn.run(
+        "auditpipe.server:app",
+        host=os.getenv("CORTEX_API_HOST", "127.0.0.1"),
+        port=int(os.getenv("CORTEX_API_PORT", "8000")),
+    )
 
 
 if __name__ == "__main__":

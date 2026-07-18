@@ -1,133 +1,149 @@
-"""Adapt auditpipe findings.json into the CorteX frontend / OpenAPI shapes."""
+"""Adapt an attested audit report to the frontend API shapes."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
+from .config import EXPECTED_RESPONSE_MODEL, REQUIRED_MODEL
 
-DOSSIER_ID = "active"
+
+def _attested(report: object) -> bool:
+    if not isinstance(report, dict) or report.get("llm_used") is not True:
+        return False
+    attestation = report.get("model_attestation")
+    if not isinstance(attestation, dict) or attestation.get("verified") is not True:
+        return False
+    if attestation.get("requested_model") != REQUIRED_MODEL:
+        return False
+    calls = attestation.get("calls")
+    if not isinstance(calls, list) or not calls:
+        return False
+    for call in calls:
+        if not isinstance(call, dict) or call.get("requested_model") != REQUIRED_MODEL:
+            return False
+        returned = str(call.get("response_model") or "").lower()
+        if not (
+            returned == REQUIRED_MODEL
+            or returned == EXPECTED_RESPONSE_MODEL
+            or returned.startswith(f"{EXPECTED_RESPONSE_MODEL}-")
+        ):
+            return False
+        if not str(call.get("response_id") or "").startswith("resp_"):
+            return False
+    return True
 
 
 def _load_report(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return report if _attested(report) else None
 
 
 def _doc_id(name: str) -> str:
-    return "doc-" + "".join(ch if ch.isalnum() else "-" for ch in name.lower()).strip("-")
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:20]
+    return f"doc-{digest}"
 
 
-def _citation(file: str, locus: str, quote: str, idx: int) -> dict[str, Any]:
+def _citation(source: dict[str, Any], index: int) -> dict[str, Any]:
+    file = str(source.get("file") or "")
+    locus = str(source.get("locus") or "")
+    page = 1
+    if locus.lower().startswith("page "):
+        try:
+            page = max(1, int(locus.split()[-1]))
+        except ValueError:
+            pass
     return {
-        "id": f"cit-{idx}",
+        "id": f"cit-{hashlib.sha256(f'{file}:{locus}:{index}'.encode()).hexdigest()[:16]}",
         "documentId": _doc_id(file),
         "documentName": file,
-        "page": 1,
-        "quote": quote or locus or file,
+        "page": page,
+        "quote": str(source.get("quote") or ""),
     }
 
 
-def _money(amount: float, citation: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "amount": f"{amount:.2f}",
-        "currency": "EUR",
-        "originalText": f"EUR {amount:,.2f}",
-        "citation": citation,
-    }
+def _evidence(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    items = list(raw.get("inculpatory") or []) + list(raw.get("exculpatory") or [])
+    return [item for item in items if isinstance(item, dict) and isinstance(item.get("source"), dict)]
 
 
-def _severity(amount: float, severity: str) -> str:
-    if severity == "high" or amount >= 100_000:
-        return "critical" if amount >= 200_000 else "high"
-    if severity == "observation" or amount < 25_000:
-        return "medium" if amount >= 10_000 else "low"
-    return "medium"
-
-
-def _kind(status: str, severity: str) -> str:
-    if status == "cleared":
-        return "clean"
-    if severity == "observation":
-        return "observation"
-    return "finding"
+def _frontend_severity(value: object) -> str:
+    severity = str(value or "low").lower()
+    return severity if severity in {"critical", "high", "medium", "low"} else "low"
 
 
 def _to_finding(raw: dict[str, Any], rank: int) -> dict[str, Any]:
-    evidence = list(raw.get("inculpatory") or []) + list(raw.get("exculpatory") or [])
-    citations = []
-    for i, ev in enumerate(evidence, 1):
-        src = ev.get("source") or {}
-        citations.append(_citation(src.get("file", "unknown"), src.get("locus", ""), src.get("quote", ""), i))
-    if not citations:
-        citations.append(_citation("findings.json", raw.get("id", ""), raw.get("title", ""), 1))
-
+    evidence = _evidence(raw)
+    citations = [_citation(item["source"], index) for index, item in enumerate(evidence, 1)]
+    status = str(raw.get("status") or "lead")
+    confidence = float(raw.get("confidence") or 0)
+    if confidence <= 1:
+        confidence *= 100
+    summary = "; ".join(str(item.get("text") or "") for item in evidence[:2])
     amount = float(raw.get("amount_eur") or 0)
-    status = raw.get("status", "confirmed")
-    conf = raw.get("confidence", 0)
-    confidence = int(round(float(conf) * 100)) if float(conf) <= 1 else int(conf)
-
-    summary_bits = [ev.get("text", "") for ev in (raw.get("inculpatory") or [])[:2]]
-    summary = "; ".join(b for b in summary_bits if b) or raw.get("narrative") or raw.get("title", "")
-
-    finding: dict[str, Any] = {
-        "id": raw["id"],
+    item = {
+        "id": str(raw.get("id") or f"finding-{rank}"),
         "rank": rank,
-        "title": raw.get("title") or raw["id"],
-        "summary": summary,
-        "kind": _kind(status, raw.get("severity", "low")),
-        "severity": _severity(amount, raw.get("severity", "low")),
-        "confidence": max(0, min(100, confidence)),
-        "reviewStatus": "confirmed" if status == "confirmed" else ("rejected" if status == "cleared" else "needs_review"),
-        "sourceCount": len(evidence) or 1,
+        "title": str(raw.get("title") or "Audit finding"),
+        "summary": summary or str(raw.get("narrative") or ""),
+        "kind": "clean" if status == "cleared" else "finding",
+        "severity": _frontend_severity(raw.get("severity")),
+        "confidence": max(0, min(100, round(confidence))),
+        "reviewStatus": (
+            "confirmed" if status == "confirmed" else "rejected" if status == "cleared" else "needs_review"
+        ),
+        "sourceCount": len({citation["documentId"] for citation in citations}),
         "citations": citations,
     }
-    if amount:
-        finding["amount"] = _money(amount, citations[0])
-    return finding
+    if amount and citations:
+        currency = str(raw.get("currency") or "XXX").upper()[:3]
+        item["amount"] = {
+            "amount": f"{amount:.2f}",
+            "currency": currency,
+            "originalText": f"{currency} {amount:,.2f}",
+            "citation": citations[0],
+        }
+    return item
 
 
 def _to_detail(raw: dict[str, Any], rank: int) -> dict[str, Any]:
-    base = _to_finding(raw, rank)
-    checks = []
-    for ev in raw.get("inculpatory") or []:
-        checks.append({"label": (ev.get("text") or "Signal")[:48], "result": "failed", "detail": ev.get("text", "")})
-    for ev in raw.get("exculpatory") or []:
-        checks.append({"label": (ev.get("text") or "Defense")[:48], "result": "passed", "detail": ev.get("text", "")})
-    if not checks:
-        checks.append({"label": "Pipeline gate", "result": "failed" if raw.get("status") == "confirmed" else "passed",
-                       "detail": raw.get("title", "")})
-
-    contradictions = []
-    for i, ev in enumerate(raw.get("inculpatory") or [], 1):
-        src = ev.get("source") or {}
-        contradictions.append({
-            "id": f"con-{raw['id']}-{i}",
-            "label": src.get("file", "Evidence"),
-            "statement": ev.get("text", ""),
-            "citation": _citation(src.get("file", "unknown"), src.get("locus", ""), src.get("quote", ""), i),
-        })
-
-    defenses = []
-    for ev in raw.get("exculpatory") or []:
-        defenses.append({
-            "explanation": ev.get("text", ""),
+    finding = _to_finding(raw, rank)
+    inculpatory = [item for item in raw.get("inculpatory") or [] if isinstance(item, dict)]
+    exculpatory = [item for item in raw.get("exculpatory") or [] if isinstance(item, dict)]
+    contradictions = [
+        {
+            "id": f"con-{finding['id']}-{index}",
+            "label": str((item.get("source") or {}).get("file") or "Evidence"),
+            "statement": str(item.get("text") or ""),
+            "citation": _citation(item.get("source") or {}, index),
+        }
+        for index, item in enumerate(inculpatory, 1)
+    ]
+    defenses = [
+        {
+            "explanation": str(item.get("text") or ""),
             "verdict": "plausible",
-            "detail": (ev.get("source") or {}).get("quote", ""),
-        })
-    if not defenses and raw.get("status") == "confirmed":
-        defenses.append({
-            "explanation": "No exculpatory evidence found in the dossier.",
-            "verdict": "refuted",
-            "detail": "Deterministic gate promoted this candidate.",
-        })
-
+            "detail": str((item.get("source") or {}).get("quote") or ""),
+        }
+        for item in exculpatory
+    ]
     return {
-        **base,
-        "claim": raw.get("narrative") or raw.get("title") or "",
-        "checks": checks,
+        **finding,
+        "claim": str(raw.get("narrative") or raw.get("title") or ""),
+        "checks": [
+            {"label": str(item.get("text") or "Evidence")[:48], "result": "failed", "detail": str(item.get("text") or "")}
+            for item in inculpatory
+        ] + [
+            {"label": str(item.get("text") or "Defense")[:48], "result": "passed", "detail": str(item.get("text") or "")}
+            for item in exculpatory
+        ],
         "contradictions": contradictions,
         "defenses": defenses,
     }
@@ -138,150 +154,109 @@ def all_raw(report: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def list_findings(report: dict[str, Any]) -> list[dict[str, Any]]:
-    items = all_raw(report)
-    return [_to_finding(raw, i) for i, raw in enumerate(items, 1)]
+    return [_to_finding(item, index) for index, item in enumerate(all_raw(report), 1)]
 
 
 def get_finding(report: dict[str, Any], finding_id: str) -> dict[str, Any] | None:
-    for i, raw in enumerate(all_raw(report), 1):
-        if raw.get("id") == finding_id:
-            return _to_detail(raw, i)
+    for index, item in enumerate(all_raw(report), 1):
+        if item.get("id") == finding_id:
+            return _to_detail(item, index)
     return None
 
 
 def dossier_summary(report: dict[str, Any] | None, document_count: int) -> dict[str, Any]:
-    if not report:
-        return {
-            "health": 100,
-            "documents": document_count,
-            "verifiedFindings": 0,
-            "reviewQueue": 0,
-            "unresolvedEntities": 0,
-            "lastUpdated": "",
-        }
-    confirmed = int(report.get("summary", {}).get("confirmed") or 0)
-    cleared = int(report.get("summary", {}).get("cleared") or 0)
-    leads = int(report.get("summary", {}).get("leads") or 0)
-    over = float(report.get("summary", {}).get("profit_overstatement_eur") or 0)
-    health = max(0, min(100, int(100 - min(90, over / 5000))))
+    summary = report.get("summary", {}) if report else {}
     return {
-        "health": health,
+        "health": 100 if not report else max(0, 100 - int(summary.get("confirmed") or 0)),
         "documents": document_count,
-        "verifiedFindings": confirmed,
-        "reviewQueue": leads,
-        "unresolvedEntities": cleared,
-        "lastUpdated": report.get("generated_at", ""),
+        "verifiedFindings": int(summary.get("confirmed") or 0),
+        "reviewQueue": int(summary.get("leads") or 0),
+        "unresolvedEntities": 0,
+        "lastUpdated": str(report.get("generated_at") or "") if report else "",
     }
 
 
 def investigation_summary(report: dict[str, Any] | None) -> dict[str, Any]:
     if not report:
         return {
-            "status": "idle",
-            "confirmed": 0,
-            "leads": 0,
-            "cleared": 0,
+            "status": "idle", "confirmed": 0, "leads": 0, "cleared": 0,
             "profit_overstatement_eur": 0.0,
-            "profit_overstatement_vs_tolerance": "within",
-            "schemes": {},
-            "findings": [],
+            "profit_overstatement_vs_tolerance": "not_assessed",
+            "schemes": {}, "findings": [], "llm_used": False,
         }
+    summary = report.get("summary") or {}
     schemes: dict[str, float] = {}
-    for f in report.get("findings") or []:
-        schemes[f.get("scheme", "other")] = schemes.get(f.get("scheme", "other"), 0) + float(f.get("amount_eur") or 0)
+    for finding in report.get("findings") or []:
+        scheme = str(finding.get("scheme") or "other")
+        schemes[scheme] = schemes.get(scheme, 0) + float(finding.get("amount_eur") or 0)
     return {
         "status": "ready",
-        "confirmed": report["summary"]["confirmed"],
-        "leads": report["summary"]["leads"],
-        "cleared": report["summary"]["cleared"],
-        "profit_overstatement_eur": report["summary"]["profit_overstatement_eur"],
-        "profit_overstatement_vs_tolerance": report["summary"]["profit_overstatement_vs_tolerance"],
+        "confirmed": int(summary.get("confirmed") or 0),
+        "leads": int(summary.get("leads") or 0),
+        "cleared": int(summary.get("cleared") or 0),
+        "profit_overstatement_eur": float(summary.get("profit_overstatement_eur") or 0),
+        "profit_overstatement_vs_tolerance": str(summary.get("profit_overstatement_vs_tolerance") or "not_assessed"),
         "schemes": schemes,
         "findings": [
-            {
-                "id": f["id"],
-                "scheme": f.get("scheme"),
-                "title": f.get("title"),
-                "amount_eur": f.get("amount_eur"),
-                "status": f.get("status"),
-            }
-            for f in (report.get("findings") or [])
+            {key: finding.get(key) for key in ("id", "scheme", "title", "amount_eur", "status")}
+            for finding in report.get("findings") or []
         ],
         "generated_at": report.get("generated_at"),
-        "llm_used": report.get("llm_used", False),
+        "llm_used": True,
+        "model_attestation": report.get("model_attestation"),
     }
 
 
 def build_graph(report: dict[str, Any] | None) -> dict[str, Any]:
     if not report:
         return {"nodes": [], "edges": []}
-
+    raw_items = all_raw(report)
+    entity_name = str((report.get("engagement") or {}).get("entity_name") or "Audited entity")
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in raw_items:
+        grouped.setdefault(str(item.get("scheme") or "other"), []).append(item)
+    first_source = next((e for item in raw_items for e in _evidence(item)), None)
+    if not first_source:
+        return {"nodes": [], "edges": []}
+    root_citation = _citation(first_source["source"], 1)
     nodes.append({
-        "id": "entity",
-        "label": "Audited entity",
-        "kind": "company",
-        "subtitle": "Dossier subject",
-        "risk": "watch",
-        "sourceCount": 1,
-        "findingIds": [f["id"] for f in report.get("findings") or []],
-        "citations": [_citation("findings.json", "summary", "audit findings", 1)],
+        "id": "entity", "label": entity_name, "kind": "company", "subtitle": "Dossier subject",
+        "risk": "watch", "sourceCount": 1,
+        "findingIds": [str(item.get("id")) for item in report.get("findings") or []],
+        "citations": [root_citation],
     })
-
-    scheme_meta = {
-        "fictitious_vendor": ("Fictitious vendor", "alert"),
-        "capex_repair": ("Capitalized repairs", "alert"),
-        "cutoff": ("Cut-off", "alert"),
-        "structuring": ("Structuring", "alert"),
-        "related_party": ("Related party", "watch"),
-    }
-    seen: set[str] = set()
-    for f in all_raw(report):
-        scheme = f.get("scheme", "other")
-        if scheme not in seen:
-            seen.add(scheme)
-            label, risk = scheme_meta.get(scheme, (scheme, "watch"))
-            ids = [x["id"] for x in all_raw(report) if x.get("scheme") == scheme]
-            cit = _citation("findings.json", scheme, label, len(seen))
-            nodes.append({
-                "id": f"scheme-{scheme}",
-                "label": label,
-                "kind": "account",
-                "subtitle": f"{len(ids)} item(s)",
-                "risk": "clear" if f.get("status") == "cleared" and scheme not in {x.get("scheme") for x in report.get("findings") or []} else risk,
-                "sourceCount": len(ids),
-                "findingIds": ids,
-                "citations": [cit],
-            })
-            edges.append({
-                "id": f"e-{scheme}",
-                "source": "entity",
-                "target": f"scheme-{scheme}",
-                "label": scheme,
-                "risk": "alert" if any(x.get("status") == "confirmed" and x.get("scheme") == scheme for x in all_raw(report)) else "clear",
-                "explanation": f"Detector {scheme} evaluated on this dossier.",
-                "findingIds": ids,
-                "citations": [cit],
-            })
+    for index, (scheme, items) in enumerate(grouped.items(), 1):
+        source = _evidence(items[0])[0]["source"]
+        citation = _citation(source, index + 1)
+        node_id = f"scheme-{hashlib.sha256(scheme.encode()).hexdigest()[:12]}"
+        ids = [str(item.get("id")) for item in items]
+        confirmed = any(item.get("status") == "confirmed" for item in items)
+        nodes.append({
+            "id": node_id, "label": scheme.replace("_", " ").title(), "kind": "account",
+            "subtitle": f"{len(items)} item(s)", "risk": "alert" if confirmed else "watch",
+            "sourceCount": len({_doc_id(str(e["source"].get("file") or "")) for item in items for e in _evidence(item)}),
+            "findingIds": ids, "citations": [citation],
+        })
+        edges.append({
+            "id": f"edge-{index}", "source": "entity", "target": node_id, "label": scheme,
+            "risk": "alert" if confirmed else "watch", "explanation": str(items[0].get("narrative") or ""),
+            "findingIds": ids, "citations": [citation],
+        })
     return {"nodes": nodes, "edges": edges}
 
 
 def list_documents(data_dir: Path) -> list[dict[str, Any]]:
-    docs = []
+    documents = []
     if not data_dir.exists():
-        return docs
-    for path in sorted(p for p in data_dir.rglob("*") if p.is_file() and p.name not in (".DS_Store",)):
-        rel = path.relative_to(data_dir).as_posix()
-        ext = path.suffix.lower().lstrip(".") or "file"
-        docs.append({
-            "id": _doc_id(rel),
-            "name": rel,
-            "type": ext.upper(),
-            "language": "DE",
-            "pages": 1,
-            "status": "verified",
-            "extractedFacts": 0,
-            "previewLines": [rel, f"Type: {ext.upper()}", f"Size: {path.stat().st_size} bytes"],
+        return documents
+    for path in sorted(item for item in data_dir.rglob("*") if item.is_file() and item.name != ".DS_Store"):
+        relative = path.relative_to(data_dir).as_posix()
+        extension = path.suffix.lower().lstrip(".") or "file"
+        documents.append({
+            "id": _doc_id(relative), "name": relative, "type": extension.upper(), "language": "DE",
+            "pages": 1, "status": "verified", "extractedFacts": 0,
+            "previewLines": [relative, f"Type: {extension.upper()}", f"Size: {path.stat().st_size} bytes"],
         })
-    return docs
+    return documents
