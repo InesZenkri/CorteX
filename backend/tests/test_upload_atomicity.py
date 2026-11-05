@@ -75,6 +75,41 @@ class UploadAtomicityTest(unittest.TestCase):
         self.assertEqual(rejected.status_code, 400)
         self.assertTrue(self.output.exists())
 
+    def test_staging_write_failure_keeps_existing_data_and_state(self):
+        self.upload_valid_dossier()
+        before = dict(server._state)
+        self.output.parent.mkdir(parents=True, exist_ok=True)
+        self.output.write_text("old findings", encoding="utf-8")
+        failing_client = TestClient(server.app, raise_server_exceptions=False)
+        with patch.object(Path, "write_bytes", side_effect=OSError("disk full")):
+            response = failing_client.post("/api/upload", files=[
+                ("files", ("Root/new.txt", b"new", "text/plain")),
+            ])
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual((self.data / "evidence.txt").read_bytes(), b"keep me")
+        self.assertEqual(self.output.read_text(), "old findings")
+        self.assertEqual(server._state, before)
+
+    def test_failed_install_restores_previous_directory(self):
+        self.upload_valid_dossier()
+        before = dict(server._state)
+        original_rename = Path.rename
+
+        def fail_install(path, target):
+            if path.parent.name.startswith(".upload-") and path.name == "data":
+                raise OSError("install failed")
+            return original_rename(path, target)
+
+        failing_client = TestClient(server.app, raise_server_exceptions=False)
+        with patch.object(Path, "rename", fail_install):
+            response = failing_client.post("/api/upload", files=[
+                ("files", ("Root/new.txt", b"new", "text/plain")),
+            ])
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual((self.data / "evidence.txt").read_bytes(), b"keep me")
+        self.assertEqual(server._state, before)
+        self.assertEqual(list(self.data.parent.glob(".upload-*")), [])
+
     def test_valid_upload_still_replaces_dossier(self):
         self.upload_valid_dossier()
         second = self.client.post("/api/upload", files=[

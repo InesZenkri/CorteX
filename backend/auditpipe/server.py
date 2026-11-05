@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import logging
 import shutil
+import tempfile
 import threading
 import uuid
 from pathlib import Path
@@ -123,45 +124,54 @@ async def upload_dossier(files: list[UploadFile] = File(...)) -> dict[str, Any]:
     if not files:
         raise HTTPException(400, "No files uploaded")
 
-    with _lock:
-        # Validate every path and stage the whole upload first. Only when all
-        # files are acceptable do we replace the current dossier, so a rejected
-        # upload never destroys existing data.
-        staged: list[tuple[Path, bytes]] = []
-        for upload in files:
-            rel = _safe_relpath(upload.filename or "")
-            staged.append((rel, await upload.read()))
+    # Validate the complete batch before reading or changing any dossier files.
+    paths = [_safe_relpath(upload.filename or "") for upload in files]
+    DATA_DIR.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".upload-", dir=DATA_DIR.parent) as temp:
+        staging = Path(temp) / "data"
+        staging.mkdir()
+        for upload, rel in zip(files, paths):
+            dest = staging / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(await upload.read())
 
-        staging = DATA_DIR.parent / f".staging-{uuid.uuid4().hex}"
-        staging.mkdir(parents=True, exist_ok=True)
-        try:
-            for rel, data in staged:
-                dest = staging / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(data)
+        # Keep the old directory until the staged one is installed. A failed
+        # rename restores it, rather than leaving a partly replaced dossier.
+        with _lock:
+            if _state["status"] == "processing":
+                raise HTTPException(409, "Investigation already running")
+            backup = DATA_DIR.parent / f".previous-{uuid.uuid4().hex}"
+            had_data = DATA_DIR.exists()
+            if had_data:
+                DATA_DIR.rename(backup)
+            installed = False
+            try:
+                staging.rename(DATA_DIR)
+                installed = True
+                # Drop stale results only after the staged dossier is in place.
+                if OUT_PATH.exists():
+                    OUT_PATH.unlink()
+            except OSError:
+                if installed:
+                    DATA_DIR.rename(staging)
+                if had_data:
+                    backup.rename(DATA_DIR)
+                raise
 
-            _clear_data_dir()
-            for child in staging.iterdir():
-                shutil.move(str(child), DATA_DIR / child.name)
-        finally:
-            shutil.rmtree(staging, ignore_errors=True)
+            if had_data:
+                shutil.rmtree(backup, ignore_errors=True)
+            written = len(paths)
 
-        written = len(staged)
-
-        # Drop previous results so UI doesn't show a stale run
-        if OUT_PATH.exists():
-            OUT_PATH.unlink()
-
-        _state.update({
-            "id": uuid.uuid4().hex,
-            "name": (files[0].filename or "dossier").split("/")[0],
-            "status": "ready",
-            "progress": 0,
-            "error": None,
-            "stage": "Upload complete",
-            "file_count": written,
-            "period": "",
-        })
+            _state.update({
+                "id": uuid.uuid4().hex,
+                "name": (files[0].filename or "dossier").split("/")[0],
+                "status": "ready",
+                "progress": 0,
+                "error": None,
+                "stage": "Upload complete",
+                "file_count": written,
+                "period": "",
+            })
 
     return {"ok": True, "files": written, "dossierId": _state["id"]}
 
