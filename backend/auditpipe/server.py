@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import logging
 import shutil
+import tempfile
 import threading
 import uuid
 from pathlib import Path
@@ -123,31 +124,54 @@ async def upload_dossier(files: list[UploadFile] = File(...)) -> dict[str, Any]:
     if not files:
         raise HTTPException(400, "No files uploaded")
 
-    with _lock:
-        _clear_data_dir()
-        written = 0
-        for upload in files:
-            rel = _safe_relpath(upload.filename or "")
-            dest = DATA_DIR / rel
+    # Validate the complete batch before reading or changing any dossier files.
+    paths = [_safe_relpath(upload.filename or "") for upload in files]
+    DATA_DIR.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".upload-", dir=DATA_DIR.parent) as temp:
+        staging = Path(temp) / "data"
+        staging.mkdir()
+        for upload, rel in zip(files, paths):
+            dest = staging / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            data = await upload.read()
-            dest.write_bytes(data)
-            written += 1
+            dest.write_bytes(await upload.read())
 
-        # Drop previous results so UI doesn't show a stale run
-        if OUT_PATH.exists():
-            OUT_PATH.unlink()
+        # Keep the old directory until the staged one is installed. A failed
+        # rename restores it, rather than leaving a partly replaced dossier.
+        with _lock:
+            if _state["status"] == "processing":
+                raise HTTPException(409, "Investigation already running")
+            backup = DATA_DIR.parent / f".previous-{uuid.uuid4().hex}"
+            had_data = DATA_DIR.exists()
+            if had_data:
+                DATA_DIR.rename(backup)
+            installed = False
+            try:
+                staging.rename(DATA_DIR)
+                installed = True
+                # Drop stale results only after the staged dossier is in place.
+                if OUT_PATH.exists():
+                    OUT_PATH.unlink()
+            except OSError:
+                if installed:
+                    DATA_DIR.rename(staging)
+                if had_data:
+                    backup.rename(DATA_DIR)
+                raise
 
-        _state.update({
-            "id": uuid.uuid4().hex,
-            "name": (files[0].filename or "dossier").split("/")[0],
-            "status": "ready",
-            "progress": 0,
-            "error": None,
-            "stage": "Upload complete",
-            "file_count": written,
-            "period": "",
-        })
+            if had_data:
+                shutil.rmtree(backup, ignore_errors=True)
+            written = len(paths)
+
+            _state.update({
+                "id": uuid.uuid4().hex,
+                "name": (files[0].filename or "dossier").split("/")[0],
+                "status": "ready",
+                "progress": 0,
+                "error": None,
+                "stage": "Upload complete",
+                "file_count": written,
+                "period": "",
+            })
 
     return {"ok": True, "files": written, "dossierId": _state["id"]}
 
