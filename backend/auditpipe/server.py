@@ -124,15 +124,29 @@ async def upload_dossier(files: list[UploadFile] = File(...)) -> dict[str, Any]:
         raise HTTPException(400, "No files uploaded")
 
     with _lock:
-        _clear_data_dir()
-        written = 0
+        # Validate every path and stage the whole upload first. Only when all
+        # files are acceptable do we replace the current dossier, so a rejected
+        # upload never destroys existing data.
+        staged: list[tuple[Path, bytes]] = []
         for upload in files:
             rel = _safe_relpath(upload.filename or "")
-            dest = DATA_DIR / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            data = await upload.read()
-            dest.write_bytes(data)
-            written += 1
+            staged.append((rel, await upload.read()))
+
+        staging = DATA_DIR.parent / f".staging-{uuid.uuid4().hex}"
+        staging.mkdir(parents=True, exist_ok=True)
+        try:
+            for rel, data in staged:
+                dest = staging / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(data)
+
+            _clear_data_dir()
+            for child in staging.iterdir():
+                shutil.move(str(child), DATA_DIR / child.name)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+        written = len(staged)
 
         # Drop previous results so UI doesn't show a stale run
         if OUT_PATH.exists():
